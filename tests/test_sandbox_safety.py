@@ -2,7 +2,7 @@ import os
 import unittest
 from unittest import mock
 
-import tinvest_client
+import etl.tinvest_client as tinvest_client
 
 
 class SandboxSafetyTests(unittest.TestCase):

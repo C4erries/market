@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable, Optional
@@ -8,6 +9,7 @@ from typing import Iterable, Optional
 import pandas as pd
 from t_tech.invest import CandleInterval
 from t_tech.invest.constants import INVEST_GRPC_API, INVEST_GRPC_API_SANDBOX
+from t_tech.invest.exceptions import RequestError
 from t_tech.invest.retrying.settings import RetryClientSettings
 from t_tech.invest.retrying.sync.client import RetryingClient
 from t_tech.invest.schemas import InstrumentIdType
@@ -22,6 +24,7 @@ INTERVAL_MAP = {
 TINVEST_ENV_VAR = "TINVEST_ENV"
 TINVEST_SANDBOX_TOKEN_VAR = "TINVEST_SANDBOX_TOKEN"
 LEGACY_TOKEN_VARS = ("INVEST_TOKEN", "TINVEST_TOKEN", "TOKEN")
+LOGGER = logging.getLogger(__name__)
 
 
 def enforce_sandbox_environment() -> None:
@@ -297,11 +300,94 @@ class TInvestClient:
         start: datetime,
         end: datetime,
     ) -> pd.DataFrame:
-        response = self.services.instruments.trading_schedules(
-            exchange=exchange,
-            from_=_as_utc(start),
-            to=_as_utc(end),
+        start_utc = _as_utc(start)
+        end_utc = _as_utc(end)
+        now_utc = _as_utc(now())
+        empty_frame = pd.DataFrame(
+            columns=[
+                "exchange",
+                "date",
+                "is_trading_day",
+                "start_time",
+                "end_time",
+                "opening_auction_start_time",
+                "opening_auction_end_time",
+                "closing_auction_start_time",
+                "closing_auction_end_time",
+                "evening_start_time",
+                "evening_end_time",
+            ]
         )
+        if start_utc is None or end_utc is None or now_utc is None:
+            return empty_frame
+
+        # Sandbox schedules do not accept historical "from" values.
+        # Avoid slow failing API calls when the requested range is fully in the past.
+        if start_utc < now_utc and end_utc <= now_utc:
+            LOGGER.warning(
+                "Skip trading schedules for exchange=%s: requested range is historical "
+                "for sandbox rules (start=%s end=%s now=%s).",
+                exchange,
+                start_utc,
+                end_utc,
+                now_utc,
+            )
+            return empty_frame
+
+        if start_utc < now_utc < end_utc:
+            LOGGER.info(
+                "Adjust trading schedules start for exchange=%s from %s to current sandbox time %s.",
+                exchange,
+                start_utc,
+                now_utc,
+            )
+            start_utc = now_utc
+
+        try:
+            response = self.services.instruments.trading_schedules(
+                exchange=exchange,
+                from_=start_utc,
+                to=end_utc,
+            )
+        except RequestError as error:
+            error_text = f"{error.details} {getattr(error.metadata, 'message', '')}".strip()
+            if "30003" in error_text:
+                fallback_start = _as_utc(now())
+                if fallback_start >= end_utc:
+                    LOGGER.warning(
+                        "Skip trading schedules for exchange=%s: sandbox accepts only current/future dates "
+                        "(requested start=%s end=%s).",
+                        exchange,
+                        start_utc,
+                        end_utc,
+                    )
+                    return empty_frame
+
+                LOGGER.warning(
+                    "Trading schedules rejected historical range for exchange=%s (start=%s end=%s, details=%s). "
+                    "Retrying with start=%s.",
+                    exchange,
+                    start_utc,
+                    end_utc,
+                    error_text,
+                    fallback_start,
+                )
+                try:
+                    response = self.services.instruments.trading_schedules(
+                        exchange=exchange,
+                        from_=fallback_start,
+                        to=end_utc,
+                    )
+                except RequestError as retry_error:
+                    LOGGER.warning(
+                        "Skip trading schedules for exchange=%s: retry failed (%s %s).",
+                        exchange,
+                        retry_error.details,
+                        getattr(retry_error.metadata, "message", ""),
+                    )
+                    return empty_frame
+            else:
+                raise
         rows = []
         for schedule in response.exchanges:
             for day in schedule.days:
@@ -322,21 +408,7 @@ class TInvestClient:
                 )
 
         if not rows:
-            return pd.DataFrame(
-                columns=[
-                    "exchange",
-                    "date",
-                    "is_trading_day",
-                    "start_time",
-                    "end_time",
-                    "opening_auction_start_time",
-                    "opening_auction_end_time",
-                    "closing_auction_start_time",
-                    "closing_auction_end_time",
-                    "evening_start_time",
-                    "evening_end_time",
-                ]
-            )
+            return empty_frame
 
         frame = pd.DataFrame(rows)
         for col in (

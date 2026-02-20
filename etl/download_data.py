@@ -3,14 +3,15 @@ from __future__ import annotations
 import argparse
 import logging
 import shutil
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 from t_tech.invest.utils import now
 
-from safety_guard import run_startup_safety_checks
-from storage import (
+from etl.safety_guard import run_startup_safety_checks
+from etl.storage import (
     deduplicate_and_sort,
     filter_new_rows_by_keys,
     get_max_timestamp,
@@ -19,7 +20,7 @@ from storage import (
     write_parquet,
     write_parquet_partitioned,
 )
-from tinvest_client import InstrumentMeta, TInvestClient
+from etl.tinvest_client import InstrumentMeta, TInvestClient
 
 
 LOGGER = logging.getLogger("download_data")
@@ -245,11 +246,26 @@ def main() -> None:
                     )
                     continue
 
+                LOGGER.info(
+                    "Loading candles symbol=%s interval=%s start=%s end=%s",
+                    instrument.requested_symbol,
+                    interval,
+                    start_dt,
+                    end_dt,
+                )
+                candles_started_at = time.perf_counter()
                 frame = api.load_candles(
                     instrument=instrument,
                     interval=interval,
                     start=start_dt,
                     end=end_dt,
+                )
+                LOGGER.info(
+                    "Loaded candles symbol=%s interval=%s raw_rows=%d elapsed=%.2fs",
+                    instrument.requested_symbol,
+                    interval,
+                    len(frame),
+                    time.perf_counter() - candles_started_at,
                 )
                 if frame.empty:
                     LOGGER.info("No candles returned symbol=%s interval=%s", instrument.requested_symbol, interval)
@@ -302,7 +318,15 @@ def main() -> None:
                 if max_dividend_date is not None:
                     dividends_start = max(dividends_start, max_dividend_date.to_pydatetime() + timedelta(days=1))
 
+            LOGGER.info("Loading dividends symbol=%s start=%s end=%s", x5.requested_symbol, dividends_start, end_dt)
+            dividends_started_at = time.perf_counter()
             dividends = api.load_dividends(x5, start=dividends_start, end=end_dt)
+            LOGGER.info(
+                "Loaded dividends symbol=%s raw_rows=%d elapsed=%.2fs",
+                x5.requested_symbol,
+                len(dividends),
+                time.perf_counter() - dividends_started_at,
+            )
             written = upsert_table(
                 path=dividends_path,
                 frame=dividends,
@@ -334,8 +358,27 @@ def main() -> None:
                     schedule_start = max(schedule_start, schedule_max.to_pydatetime() + timedelta(days=1))
 
             if schedule_start >= end_dt:
+                LOGGER.info(
+                    "Skip trading schedules exchange=%s (start=%s >= end=%s)",
+                    exchange,
+                    schedule_start,
+                    end_dt,
+                )
                 continue
+            LOGGER.info(
+                "Loading trading schedules exchange=%s start=%s end=%s",
+                exchange,
+                schedule_start,
+                end_dt,
+            )
+            schedule_started_at = time.perf_counter()
             schedule_frame = api.load_trading_schedules(exchange, start=schedule_start, end=end_dt)
+            LOGGER.info(
+                "Loaded trading schedules exchange=%s rows=%d elapsed=%.2fs",
+                exchange,
+                len(schedule_frame),
+                time.perf_counter() - schedule_started_at,
+            )
             if not schedule_frame.empty:
                 schedule_frames.append(schedule_frame)
 
@@ -348,8 +391,17 @@ def main() -> None:
                 sort_cols=["exchange", "date"],
             )
             LOGGER.info("Saved trading schedule rows=%d", written)
+        else:
+            LOGGER.info("No trading schedules to save.")
 
+        LOGGER.info("Loading trading statuses for %d instruments", len(resolved))
+        statuses_started_at = time.perf_counter()
         statuses = api.load_trading_statuses(list(resolved.values()))
+        LOGGER.info(
+            "Loaded trading statuses rows=%d elapsed=%.2fs",
+            len(statuses),
+            time.perf_counter() - statuses_started_at,
+        )
         if not statuses.empty:
             written = upsert_table(
                 path=calendars_dir / "trading_statuses.parquet",
@@ -358,6 +410,8 @@ def main() -> None:
                 sort_cols=["symbol", "loaded_at"],
             )
             LOGGER.info("Saved trading statuses rows=%d", written)
+        else:
+            LOGGER.info("No trading statuses to save.")
 
     LOGGER.info("Done.")
 

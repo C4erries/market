@@ -61,24 +61,24 @@ test:
 	$(PYTHON) -m unittest discover -s tests -p "test_*.py"
 
 compile:
-	$(PYTHON) -m compileall main.py download_data.py tinvest_client.py storage.py safety_guard.py ml_pipeline prepare_features.py train_and_evaluate.py predict.py tests
+	$(PYTHON) -m compileall main.py etl ml_pipeline scripts tests
 
 check: compile test
 
 run:
-	$(PYTHON) download_data.py --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start "$(START)" --end "$(END)" --out "$(OUT)" --mode "$(MODE)"
+	$(PYTHON) -m etl.download_data --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start "$(START)" --end "$(END)" --out "$(OUT)" --mode "$(MODE)"
 
 run-full:
-	$(PYTHON) download_data.py --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
+	$(PYTHON) -m etl.download_data --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
 
 ml-prepare:
-	$(PYTHON) prepare_features.py --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
+	$(PYTHON) -m scripts.prepare_features --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
 
 ml-train:
-	$(PYTHON) train_and_evaluate.py --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
+	$(PYTHON) -m scripts.train_and_evaluate --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
 
 ml-predict:
-	$(PYTHON) predict.py --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
+	$(PYTHON) -m scripts.predict --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
 
 clean:
 	$(PYTHON) -c "from pathlib import Path; import shutil; [shutil.rmtree(p, ignore_errors=True) for p in Path('.').rglob('__pycache__')]"

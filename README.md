@@ -4,6 +4,15 @@ Data collector for instruments, candles, trading schedules, trading statuses, an
 This repository is **sandbox-only** and intentionally blocks production API usage.
 ML pipeline is fully offline and reads only local Parquet/CSV files (no API calls).
 
+## Project Structure
+
+```text
+etl/              # ETL core modules (sandbox-only client, storage, guards, downloader)
+ml_pipeline/      # offline ML data/model modules
+scripts/          # CLI implementations for ML tasks
+main.py           # optional root entrypoint for ETL
+```
+
 ## Install
 
 ```bash
@@ -34,13 +43,13 @@ Production tokens are not supported in this repository.
 Incremental mode:
 
 ```bash
-python download_data.py --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start 2018-01-01 --end now --out ./data --mode incremental
+python -m etl.download_data --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start 2018-01-01 --end now --out ./data --mode incremental
 ```
 
 Full reload:
 
 ```bash
-python download_data.py --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start max --end now --out ./data --mode full
+python -m etl.download_data --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start max --end now --out ./data --mode full
 ```
 
 ## ML Pipeline (Offline)
@@ -54,7 +63,7 @@ make install-ml
 ### 1) Build model-ready dataset
 
 ```bash
-python prepare_features.py \
+python -m scripts.prepare_features \
   --x5 ./data/x5_1d.parquet \
   --imoex ./data/imoex_1d.parquet \
   --usdrub ./data/usdrub_1d.parquet \
@@ -73,7 +82,7 @@ What it does:
 ### 2) Train and evaluate
 
 ```bash
-python train_and_evaluate.py \
+python -m scripts.train_and_evaluate \
   --dataset ./data/model_ready/x5_next_day.parquet \
   --artifacts ./artifacts/ml \
   --train-ratio 0.70 \
@@ -97,7 +106,7 @@ Saved artifacts:
 ### 3) Predict latest signal
 
 ```bash
-python predict.py \
+python -m scripts.predict \
   --dataset ./data/model_ready/x5_next_day.parquet \
   --artifacts ./artifacts/ml
 ```

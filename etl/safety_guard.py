@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 from typing import Iterable
 
-from tinvest_client import enforce_sandbox_environment
+from etl.tinvest_client import enforce_sandbox_environment
 
 
 FORBIDDEN_METHOD_CALLS = {
@@ -70,7 +70,7 @@ def _collect_violations(path: Path) -> list[str]:
 
 
 def enforce_data_only_repository(root: Path | None = None) -> None:
-    project_root = root or Path(__file__).resolve().parent
+    project_root = root or Path(__file__).resolve().parent.parent
     violations: list[str] = []
     for file_path in _iter_python_files(project_root):
         violations.extend(_collect_violations(file_path))
