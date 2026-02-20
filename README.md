@@ -121,6 +121,7 @@ make ml-train
 make ml-predict
 make ml-report
 make ml-diagnostics
+make ml-diagnostics-deep
 make ml-data-view
 make ml-model-plots
 ```

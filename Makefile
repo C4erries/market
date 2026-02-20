@@ -28,7 +28,7 @@ ML_DATA_VIEW_OUT ?= $(ML_ARTIFACTS)/data_view
 ML_MODEL_PLOTS_OUT ?= $(ML_ARTIFACTS)/plots/model_diagnostics
 SYMBOL ?= X5
 
-.PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-x5 run-imoex run-usdrub run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report ml-diagnostics ml-data-view ml-model-plots clean
+.PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-x5 run-imoex run-usdrub run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report ml-diagnostics ml-diagnostics-deep ml-data-view ml-model-plots clean
 
 help:
 	@echo "Available targets:"
@@ -52,6 +52,7 @@ help:
 	@echo "  make ml-predict   - inference on latest row"
 	@echo "  make ml-report    - print compact report for all trained models"
 	@echo "  make ml-diagnostics - show raw/model-ready date windows and row counts"
+	@echo "  make ml-diagnostics-deep - run deep data/model diagnostics and save JSON report"
 	@echo "  make ml-data-view - plot raw/model-ready data overview"
 	@echo "  make ml-model-plots - plot model diagnostics from training artifacts"
 	@echo "  make clean        - remove Python cache files"
@@ -126,6 +127,9 @@ ml-report:
 
 ml-diagnostics:
 	$(PYTHON) -m scripts.ml_diagnostics --raw-x5 "$(RAW_X5)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)"
+
+ml-diagnostics-deep:
+	$(PYTHON) -m scripts.ml_diagnostics_deep --raw-x5 "$(RAW_X5)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --output "$(ML_ARTIFACTS)/reports/diagnostics_deep.json"
 
 ml-data-view:
 	$(PYTHON) -m scripts.data_view --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --out "$(ML_DATA_VIEW_OUT)"
