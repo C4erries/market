@@ -103,9 +103,9 @@ run-full-usdrub:
 	$(MAKE) run-full-symbol SYMBOL=USDRUB
 
 ml-build-raw:
-	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_X5)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','X5'),('interval','==','1d')]); df.to_parquet('$(RAW_X5)', index=False); print('saved', len(df), 'rows to', '$(RAW_X5)')"
-	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_IMOEX)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','IMOEX'),('interval','==','1d')]); df.to_parquet('$(RAW_IMOEX)', index=False); print('saved', len(df), 'rows to', '$(RAW_IMOEX)')"
-	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_USDRUB)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','USDRUB'),('interval','==','1d')]); df.to_parquet('$(RAW_USDRUB)', index=False); print('saved', len(df), 'rows to', '$(RAW_USDRUB)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_X5)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','X5'),('interval','==','1d')]); assert len(df)>0, 'X5 1d is empty. Run make run-x5 or make run-full'; df.to_parquet('$(RAW_X5)', index=False); print('saved', len(df), 'rows to', '$(RAW_X5)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_IMOEX)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','IMOEX'),('interval','==','1d')]); assert len(df)>0, 'IMOEX 1d is empty. Run make run-imoex or make run-full'; df.to_parquet('$(RAW_IMOEX)', index=False); print('saved', len(df), 'rows to', '$(RAW_IMOEX)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_USDRUB)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','USDRUB'),('interval','==','1d')]); assert len(df)>0, 'USDRUB 1d is empty. Run make run-usdrub or make run-full'; df.to_parquet('$(RAW_USDRUB)', index=False); print('saved', len(df), 'rows to', '$(RAW_USDRUB)')"
 
 ml-prepare:
 	$(PYTHON) -m scripts.prepare_features --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"

@@ -42,6 +42,8 @@ def _find_column_case_insensitive(columns: Iterable[str], wanted_names: Iterable
 
 
 def _normalize_date_column(frame: pd.DataFrame) -> pd.Series:
+    if frame.empty:
+        raise ValueError("Input table is empty. Rebuild raw 1D files before running ml-prepare.")
     date_col = _find_column_case_insensitive(frame.columns, DATE_CANDIDATES)
     if date_col is None:
         raise ValueError(f"Could not detect date column. Expected one of: {DATE_CANDIDATES}")

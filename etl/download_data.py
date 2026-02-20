@@ -47,6 +47,8 @@ SYMBOL_DISALLOW_CLASS_CODES = {
     "USDRUB": ["SPBFUT"],
 }
 
+MIN_REASONABLE_HISTORY_START = datetime(1990, 1, 1, tzinfo=timezone.utc)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download T-Invest historical market data")
@@ -115,18 +117,39 @@ def resolve_start_for_instrument(
     instrument: InstrumentMeta,
     end_dt: datetime,
 ) -> datetime:
+    def valid_history_date(value: datetime | None) -> bool:
+        if value is None:
+            return False
+        if value < MIN_REASONABLE_HISTORY_START:
+            return False
+        if value >= end_dt:
+            return False
+        return True
+
     if start_arg.strip().lower() != "max":
         return parse_datetime(start_arg)
 
     if interval == "1d":
-        if instrument.first_1day_candle_date:
+        if valid_history_date(instrument.first_1day_candle_date):
             return instrument.first_1day_candle_date
+        if instrument.first_1day_candle_date is not None:
+            LOGGER.warning(
+                "Ignore suspicious first_1day_candle_date for %s: %s; using fallback 10 years.",
+                instrument.requested_symbol,
+                instrument.first_1day_candle_date,
+            )
         return end_dt - timedelta(days=3650)
 
     if interval == "5m":
         two_years_ago = end_dt - timedelta(days=730)
-        if instrument.first_1min_candle_date:
+        if valid_history_date(instrument.first_1min_candle_date):
             return max(two_years_ago, instrument.first_1min_candle_date)
+        if instrument.first_1min_candle_date is not None:
+            LOGGER.warning(
+                "Ignore suspicious first_1min_candle_date for %s: %s; using fallback 2 years.",
+                instrument.requested_symbol,
+                instrument.first_1min_candle_date,
+            )
         return two_years_ago
 
     raise ValueError(f"Unsupported interval: {interval}")
@@ -145,20 +168,22 @@ def upsert_table(path: Path, frame: pd.DataFrame, key_cols: list[str], sort_cols
     return len(frame)
 
 
-def prepare_full_mode(out_dir: Path) -> None:
-    targets = [
-        out_dir / "candles",
-        out_dir / "calendars" / "trading_schedules.parquet",
-        out_dir / "calendars" / "trading_statuses.parquet",
-        out_dir / "corporate_actions" / "dividends_symbol=X5.parquet",
-        out_dir / "instruments.parquet",
-    ]
-    for target in targets:
-        if target.is_dir():
-            shutil.rmtree(target, ignore_errors=True)
-            continue
-        if target.exists():
-            target.unlink()
+def prepare_full_mode(out_dir: Path, symbols: list[str]) -> None:
+    if not symbols:
+        return
+
+    candles_root = out_dir / "candles"
+    corporate_actions_root = out_dir / "corporate_actions"
+
+    for symbol in symbols:
+        symbol_dir = candles_root / f"symbol={symbol}"
+        if symbol_dir.exists():
+            shutil.rmtree(symbol_dir, ignore_errors=True)
+
+    if "X5" in symbols:
+        dividends_path = corporate_actions_root / "dividends_symbol=X5.parquet"
+        if dividends_path.exists():
+            dividends_path.unlink()
 
 
 def main() -> None:
@@ -181,7 +206,7 @@ def main() -> None:
     intervals = normalize_intervals(args.intervals)
     end_dt = parse_datetime(args.end)
     if args.mode == "full":
-        prepare_full_mode(out_dir)
+        prepare_full_mode(out_dir, symbols=symbols)
 
     LOGGER.info("Starting download for symbols=%s intervals=%s mode=%s", symbols, intervals, args.mode)
     LOGGER.info("Output directory: %s", out_dir.resolve())
