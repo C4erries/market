@@ -34,6 +34,7 @@ INTERVAL_ALIASES = {
 }
 
 SYMBOL_CLASS_HINTS = {
+    "MGNT": ["TQBR"],
     "X5": ["TQBR"],
     "IMOEX": ["INDX", "TQBR"],
     "USDRUB": ["CETS"],
@@ -52,7 +53,7 @@ MIN_REASONABLE_HISTORY_START = datetime(1990, 1, 1, tzinfo=timezone.utc)
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download T-Invest historical market data")
-    parser.add_argument("--symbols", default="X5,IMOEX,USDRUB", help="Comma-separated symbols")
+    parser.add_argument("--symbols", default="MGNT,IMOEX,USDRUB", help="Comma-separated symbols")
     parser.add_argument("--intervals", default="1d,5m", help="Comma-separated intervals")
     parser.add_argument("--start", default="2018-01-01", help="ISO date or 'max'")
     parser.add_argument("--end", default="now", help="ISO date or 'now'")
@@ -180,8 +181,8 @@ def prepare_full_mode(out_dir: Path, symbols: list[str]) -> None:
         if symbol_dir.exists():
             shutil.rmtree(symbol_dir, ignore_errors=True)
 
-    if "X5" in symbols:
-        dividends_path = corporate_actions_root / "dividends_symbol=X5.parquet"
+    for symbol in symbols:
+        dividends_path = corporate_actions_root / f"dividends_symbol={symbol}.parquet"
         if dividends_path.exists():
             dividends_path.unlink()
 
@@ -344,21 +345,25 @@ def main() -> None:
 
         LOGGER.info("Saved candle rows total=%d", total_candles)
 
-        if "X5" in resolved:
-            x5 = resolved["X5"]
-            dividends_path = corporate_actions_dir / "dividends_symbol=X5.parquet"
-            dividends_start = resolve_start_for_instrument(args.start, "1d", x5, end_dt)
+        for symbol, instrument in resolved.items():
+            dividends_path = corporate_actions_dir / f"dividends_symbol={symbol}.parquet"
+            dividends_start = resolve_start_for_instrument(args.start, "1d", instrument, end_dt)
             if args.mode == "incremental":
                 max_dividend_date = get_max_timestamp(dividends_path, ts_col="record_date")
                 if max_dividend_date is not None:
                     dividends_start = max(dividends_start, max_dividend_date.to_pydatetime() + timedelta(days=1))
 
-            LOGGER.info("Loading dividends symbol=%s start=%s end=%s", x5.requested_symbol, dividends_start, end_dt)
+            LOGGER.info(
+                "Loading dividends symbol=%s start=%s end=%s",
+                instrument.requested_symbol,
+                dividends_start,
+                end_dt,
+            )
             dividends_started_at = time.perf_counter()
-            dividends = api.load_dividends(x5, start=dividends_start, end=end_dt)
+            dividends = api.load_dividends(instrument, start=dividends_start, end=end_dt)
             LOGGER.info(
                 "Loaded dividends symbol=%s raw_rows=%d elapsed=%.2fs",
-                x5.requested_symbol,
+                instrument.requested_symbol,
                 len(dividends),
                 time.perf_counter() - dividends_started_at,
             )

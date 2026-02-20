@@ -107,16 +107,16 @@ def plot_price_and_volume(frame: pd.DataFrame, output_path: str | Path, *, title
 
 
 def plot_context_normalized(
-    x5_frame: pd.DataFrame,
+    main_frame: pd.DataFrame,
     output_path: str | Path,
     *,
     imoex_frame: Optional[pd.DataFrame] = None,
     usdrub_frame: Optional[pd.DataFrame] = None,
 ) -> Path:
-    if "close" not in x5_frame.columns:
-        raise ValueError("X5 frame must contain close column")
+    if "close" not in main_frame.columns:
+        raise ValueError("Main frame must contain close column")
 
-    merged = x5_frame[["date", "close"]].rename(columns={"close": "X5"}).copy()
+    merged = main_frame[["date", "close"]].rename(columns={"close": "MAIN"}).copy()
     if imoex_frame is not None and "close" in imoex_frame.columns:
         merged = merged.merge(imoex_frame[["date", "close"]].rename(columns={"close": "IMOEX"}), on="date", how="left")
     if usdrub_frame is not None and "close" in usdrub_frame.columns:

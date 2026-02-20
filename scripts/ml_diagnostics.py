@@ -71,18 +71,20 @@ def _print_summary(name: str, summary: dict) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Diagnose ML raw/model-ready date ranges")
-    parser.add_argument("--raw-x5", default="./data/candles_x5_1d.parquet")
+    parser.add_argument("--raw-main", default=None)
+    parser.add_argument("--raw-x5", default="./data/candles_mgnt_1d.parquet", help="Deprecated alias for --raw-main")
     parser.add_argument("--raw-imoex", default="./data/candles_imoex_1d.parquet")
     parser.add_argument("--raw-usdrub", default="./data/candles_usdrub_1d.parquet")
-    parser.add_argument("--dataset", default="./data/model_ready/x5_next_day.parquet")
+    parser.add_argument("--dataset", default="./data/model_ready/mgnt_next_day.parquet")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    raw_main = args.raw_main or args.raw_x5
 
     sources = {
-        "raw_x5": Path(args.raw_x5),
+        "raw_main": Path(raw_main),
         "raw_imoex": Path(args.raw_imoex),
         "raw_usdrub": Path(args.raw_usdrub),
         "model_ready": Path(args.dataset),
@@ -93,7 +95,7 @@ def main() -> None:
         _print_summary(name, summary)
 
     print("\nDerived diagnostics:")
-    ok_raw = [summaries[key] for key in ("raw_x5", "raw_imoex", "raw_usdrub") if summaries[key]["status"] == "ok"]
+    ok_raw = [summaries[key] for key in ("raw_main", "raw_imoex", "raw_usdrub") if summaries[key]["status"] == "ok"]
     if len(ok_raw) == 3:
         raw_start = max(item["date_min"] for item in ok_raw if item["date_min"] is not None)
         raw_end = min(item["date_max"] for item in ok_raw if item["date_max"] is not None)

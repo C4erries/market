@@ -43,13 +43,13 @@ Production tokens are not supported in this repository.
 Incremental mode:
 
 ```bash
-python -m etl.download_data --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start 2018-01-01 --end now --out ./data --mode incremental
+python -m etl.download_data --symbols MGNT,IMOEX,USDRUB --intervals 1d,5m --start 2018-01-01 --end now --out ./data --mode incremental
 ```
 
 Full reload:
 
 ```bash
-python -m etl.download_data --symbols X5,IMOEX,USDRUB --intervals 1d,5m --start max --end now --out ./data --mode full
+python -m etl.download_data --symbols MGNT,IMOEX,USDRUB --intervals 1d,5m --start max --end now --out ./data --mode full
 ```
 
 ## ML Pipeline (Offline)
@@ -64,17 +64,17 @@ make install-ml
 
 ```bash
 python -m scripts.prepare_features \
-  --x5 ./data/x5_1d.parquet \
+  --main ./data/mgnt_1d.parquet \
   --imoex ./data/imoex_1d.parquet \
   --usdrub ./data/usdrub_1d.parquet \
   --calendar ./data/calendars/trading_schedules.parquet \
-  --dividends ./data/corporate_actions/dividends_symbol=X5.parquet \
-  --output ./data/model_ready/x5_next_day.parquet \
+  --dividends ./data/corporate_actions/dividends_symbol=MGNT.parquet \
+  --output ./data/model_ready/mgnt_next_day.parquet \
   --target-type log
 ```
 
 What it does:
-- merges local X5 + context by date;
+- merges local main symbol + context by date;
 - builds tabular features (returns lags, volatility, momentum, range, volume, calendar, context);
 - creates target `y` (next-day return) and `y_dir`;
 - drops rows with NaN from rolling windows and the last row without `t+1`.
@@ -83,7 +83,7 @@ What it does:
 
 ```bash
 python -m scripts.train_and_evaluate \
-  --dataset ./data/model_ready/x5_next_day.parquet \
+  --dataset ./data/model_ready/mgnt_next_day.parquet \
   --artifacts ./artifacts/ml \
   --train-ratio 0.70 \
   --val-ratio 0.15 \
@@ -107,7 +107,7 @@ Saved artifacts:
 
 ```bash
 python -m scripts.predict \
-  --dataset ./data/model_ready/x5_next_day.parquet \
+  --dataset ./data/model_ready/mgnt_next_day.parquet \
   --artifacts ./artifacts/ml
 ```
 
@@ -133,7 +133,7 @@ make ml-data-view
 ```
 
 Saves data overview to `./artifacts/ml/data_view`:
-- `x5_price_volume.png`
+- `main_price_volume.png`
 - `context_normalized.png`
 - `target_distribution.png`
 - `missing_ratio.png`
@@ -159,15 +159,15 @@ Saves model diagnostics to `./artifacts/ml/plots/model_diagnostics`:
 data/
   instruments.parquet
   candles/
-    symbol=X5/interval=5m/year=2025/...
-    symbol=X5/interval=1d/year=2025/...
+    symbol=MGNT/interval=5m/year=2025/...
+    symbol=MGNT/interval=1d/year=2025/...
     symbol=IMOEX/interval=1d/year=2025/...
     symbol=USDRUB/interval=1d/year=2025/...
   calendars/
     trading_schedules.parquet
     trading_statuses.parquet
   corporate_actions/
-    dividends_symbol=X5.parquet
+    dividends_symbol=MGNT.parquet
 ```
 
 ## Safety Guards

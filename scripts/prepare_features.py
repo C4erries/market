@@ -8,7 +8,8 @@ from ml_pipeline.data_pipeline import build_model_ready_dataset
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build model-ready dataset from local raw files")
-    parser.add_argument("--x5", required=True, help="Path to X5 daily candles (Parquet/CSV)")
+    parser.add_argument("--main", default=None, help="Path to main symbol daily candles (Parquet/CSV)")
+    parser.add_argument("--x5", default=None, help="Deprecated alias for --main")
     parser.add_argument("--imoex", default=None, help="Optional path to IMOEX daily candles")
     parser.add_argument("--usdrub", default=None, help="Optional path to USDRUB daily candles")
     parser.add_argument("--calendar", default=None, help="Optional path to trading calendar")
@@ -22,9 +23,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    main_path = args.main or args.x5
+    if not main_path:
+        raise ValueError("Missing required input: provide --main (or legacy --x5).")
 
     dataset = build_model_ready_dataset(
-        x5_path=args.x5,
+        x5_path=main_path,
         output_path=args.output,
         imoex_path=args.imoex,
         usdrub_path=args.usdrub,

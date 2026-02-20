@@ -1,2 +1,1 @@
-"""Offline ML pipeline for X5 next-day forecasting."""
-
+"""Offline ML pipeline for next-day forecasting."""

@@ -185,10 +185,11 @@ def _artifacts_stats(artifacts: Path) -> dict[str, object]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deep diagnostics for raw data, model-ready dataset and ML artifacts")
-    parser.add_argument("--raw-x5", default="./data/candles_x5_1d.parquet")
+    parser.add_argument("--raw-main", default=None)
+    parser.add_argument("--raw-x5", default="./data/candles_mgnt_1d.parquet", help="Deprecated alias for --raw-main")
     parser.add_argument("--raw-imoex", default="./data/candles_imoex_1d.parquet")
     parser.add_argument("--raw-usdrub", default="./data/candles_usdrub_1d.parquet")
-    parser.add_argument("--dataset", default="./data/model_ready/x5_next_day.parquet")
+    parser.add_argument("--dataset", default="./data/model_ready/mgnt_next_day.parquet")
     parser.add_argument("--artifacts", default="./artifacts/ml")
     parser.add_argument("--output", default="./artifacts/ml/reports/diagnostics_deep.json")
     return parser.parse_args()
@@ -196,8 +197,9 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    raw_main = args.raw_main or args.raw_x5
     raw_stats = [
-        _basic_table_stats("raw_x5", Path(args.raw_x5)),
+        _basic_table_stats("raw_main", Path(raw_main)),
         _basic_table_stats("raw_imoex", Path(args.raw_imoex)),
         _basic_table_stats("raw_usdrub", Path(args.raw_usdrub)),
     ]

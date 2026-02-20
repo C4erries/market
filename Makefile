@@ -12,23 +12,31 @@ endif
 
 PYTHON ?= python
 OUT ?= ./data
-SYMBOLS ?= X5,IMOEX,USDRUB
+TARGET_SYMBOL ?= MGNT
+SYMBOLS ?= $(TARGET_SYMBOL),IMOEX,USDRUB
 INTERVALS ?= 1d,5m
 START ?= 2018-01-01
 END ?= now
 MODE ?= incremental
-RAW_X5 ?= ./data/candles_x5_1d.parquet
+RAW_MAIN ?= ./data/candles_mgnt_1d.parquet
+RAW_X5 ?= $(RAW_MAIN)
 RAW_IMOEX ?= ./data/candles_imoex_1d.parquet
 RAW_USDRUB ?= ./data/candles_usdrub_1d.parquet
 RAW_CALENDAR ?=
 RAW_DIVIDENDS ?=
-ML_DATASET ?= ./data/model_ready/x5_next_day.parquet
+ML_DATASET ?= ./data/model_ready/mgnt_next_day.parquet
 ML_ARTIFACTS ?= ./artifacts/ml
 ML_DATA_VIEW_OUT ?= $(ML_ARTIFACTS)/data_view
 ML_MODEL_PLOTS_OUT ?= $(ML_ARTIFACTS)/plots/model_diagnostics
-SYMBOL ?= X5
+ML_TRAIN_RATIO ?= 0.70
+ML_VAL_RATIO ?= 0.15
+ML_TEST_RATIO ?= 0.15
+ML_THRESHOLD_QUANTILES ?= 0.6,0.7,0.8,0.9
+ML_COST_BPS ?= 0
+ML_RANDOM_STATE ?= 42
+SYMBOL ?= $(TARGET_SYMBOL)
 
-.PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-x5 run-imoex run-usdrub run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report ml-diagnostics ml-diagnostics-deep ml-data-view ml-model-plots clean
+.PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-mgnt run-x5 run-imoex run-usdrub run-full-mgnt run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report ml-diagnostics ml-diagnostics-deep ml-data-view ml-model-plots clean
 
 help:
 	@echo "Available targets:"
@@ -41,14 +49,14 @@ help:
 	@echo "  make check        - run compile + tests"
 	@echo "  make run          - run ETL in incremental mode"
 	@echo "  make run-full     - run ETL in full mode"
-	@echo "  make run-symbol   - run ETL incremental for one symbol (use SYMBOL=X5/IMOEX/USDRUB)"
+	@echo "  make run-symbol   - run ETL incremental for one symbol (use SYMBOL=MGNT/IMOEX/USDRUB)"
 	@echo "  make run-full-symbol - run ETL full for one symbol (use SYMBOL=...)"
-	@echo "  make run-x5 / run-imoex / run-usdrub - shortcuts for one-symbol incremental"
-	@echo "  make run-full-x5 / run-full-imoex / run-full-usdrub - shortcuts for one-symbol full"
+	@echo "  make run-mgnt / run-imoex / run-usdrub - shortcuts for one-symbol incremental"
+	@echo "  make run-full-mgnt / run-full-imoex / run-full-usdrub - shortcuts for one-symbol full"
 	@echo "  make install-ml   - install ML dependencies"
 	@echo "  make ml-build-raw - build flat 1D parquet files from partitioned candles"
 	@echo "  make ml-prepare   - build model-ready dataset"
-	@echo "  make ml-train     - train/evaluate models"
+	@echo "  make ml-train     - train/evaluate models (override ML_COST_BPS / ML_THRESHOLD_QUANTILES if needed)"
 	@echo "  make ml-predict   - inference on latest row"
 	@echo "  make ml-report    - print compact report for all trained models"
 	@echo "  make ml-diagnostics - show raw/model-ready date windows and row counts"
@@ -90,6 +98,9 @@ run-symbol:
 run-full-symbol:
 	$(PYTHON) -m etl.download_data --symbols "$(SYMBOL)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
 
+run-mgnt:
+	$(MAKE) run-symbol SYMBOL=MGNT
+
 run-x5:
 	$(MAKE) run-symbol SYMBOL=X5
 
@@ -98,6 +109,9 @@ run-imoex:
 
 run-usdrub:
 	$(MAKE) run-symbol SYMBOL=USDRUB
+
+run-full-mgnt:
+	$(MAKE) run-full-symbol SYMBOL=MGNT
 
 run-full-x5:
 	$(MAKE) run-full-symbol SYMBOL=X5
@@ -109,15 +123,15 @@ run-full-usdrub:
 	$(MAKE) run-full-symbol SYMBOL=USDRUB
 
 ml-build-raw:
-	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_X5)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','X5'),('interval','==','1d')]); assert len(df)>0, 'X5 1d is empty. Run make run-x5 or make run-full'; df.to_parquet('$(RAW_X5)', index=False); print('saved', len(df), 'rows to', '$(RAW_X5)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_MAIN)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','$(TARGET_SYMBOL)'),('interval','==','1d')]); assert len(df)>0, '$(TARGET_SYMBOL) 1d is empty. Run make run-symbol SYMBOL=$(TARGET_SYMBOL) or make run-full'; df.to_parquet('$(RAW_MAIN)', index=False); print('saved', len(df), 'rows to', '$(RAW_MAIN)')"
 	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_IMOEX)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','IMOEX'),('interval','==','1d')]); assert len(df)>0, 'IMOEX 1d is empty. Run make run-imoex or make run-full'; df.to_parquet('$(RAW_IMOEX)', index=False); print('saved', len(df), 'rows to', '$(RAW_IMOEX)')"
 	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_USDRUB)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','USDRUB'),('interval','==','1d')]); assert len(df)>0, 'USDRUB 1d is empty. Run make run-usdrub or make run-full'; df.to_parquet('$(RAW_USDRUB)', index=False); print('saved', len(df), 'rows to', '$(RAW_USDRUB)')"
 
 ml-prepare:
-	$(PYTHON) -m scripts.prepare_features --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
+	$(PYTHON) -m scripts.prepare_features --main "$(RAW_MAIN)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
 
 ml-train:
-	$(PYTHON) -m scripts.train_and_evaluate --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
+	$(PYTHON) -m scripts.train_and_evaluate --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --train-ratio "$(ML_TRAIN_RATIO)" --val-ratio "$(ML_VAL_RATIO)" --test-ratio "$(ML_TEST_RATIO)" --threshold-quantiles "$(ML_THRESHOLD_QUANTILES)" --random-state "$(ML_RANDOM_STATE)" --cost-bps "$(ML_COST_BPS)"
 
 ml-predict:
 	$(PYTHON) -m scripts.predict --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
@@ -126,13 +140,13 @@ ml-report:
 	$(PYTHON) -m scripts.ml_report --artifacts "$(ML_ARTIFACTS)"
 
 ml-diagnostics:
-	$(PYTHON) -m scripts.ml_diagnostics --raw-x5 "$(RAW_X5)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)"
+	$(PYTHON) -m scripts.ml_diagnostics --raw-main "$(RAW_MAIN)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)"
 
 ml-diagnostics-deep:
-	$(PYTHON) -m scripts.ml_diagnostics_deep --raw-x5 "$(RAW_X5)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --output "$(ML_ARTIFACTS)/reports/diagnostics_deep.json"
+	$(PYTHON) -m scripts.ml_diagnostics_deep --raw-main "$(RAW_MAIN)" --raw-imoex "$(RAW_IMOEX)" --raw-usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --output "$(ML_ARTIFACTS)/reports/diagnostics_deep.json"
 
 ml-data-view:
-	$(PYTHON) -m scripts.data_view --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --out "$(ML_DATA_VIEW_OUT)"
+	$(PYTHON) -m scripts.data_view --main "$(RAW_MAIN)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --dataset "$(ML_DATASET)" --out "$(ML_DATA_VIEW_OUT)"
 
 ml-model-plots:
 	$(PYTHON) -m scripts.model_plots --artifacts "$(ML_ARTIFACTS)" --out "$(ML_MODEL_PLOTS_OUT)"

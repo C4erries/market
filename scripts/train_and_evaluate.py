@@ -8,7 +8,7 @@ from ml_pipeline.model_pipeline import train_and_evaluate
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train and evaluate X5 next-day ML models")
+    parser = argparse.ArgumentParser(description="Train and evaluate next-day ML models")
     parser.add_argument("--dataset", required=True, help="Path to model-ready dataset (.parquet/.csv)")
     parser.add_argument("--artifacts", default="./artifacts/ml", help="Output directory for models and reports")
     parser.add_argument("--train-ratio", type=float, default=0.70)

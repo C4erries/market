@@ -19,7 +19,8 @@ from ml_pipeline.visualization import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Data viewer: summaries and plots for raw/model-ready datasets")
-    parser.add_argument("--x5", required=True, help="Path to X5 candles (1d)")
+    parser.add_argument("--main", default=None, help="Path to main symbol candles (1d)")
+    parser.add_argument("--x5", default=None, help="Deprecated alias for --main")
     parser.add_argument("--imoex", default=None, help="Optional path to IMOEX candles (1d)")
     parser.add_argument("--usdrub", default=None, help="Optional path to USDRUB candles (1d)")
     parser.add_argument("--dataset", default=None, help="Optional path to model-ready dataset")
@@ -41,8 +42,11 @@ def main() -> None:
     args = parse_args()
     output_dir = Path(args.out)
     output_dir.mkdir(parents=True, exist_ok=True)
+    main_path = args.main or args.x5
+    if not main_path:
+        raise ValueError("Missing required input: provide --main (or legacy --x5).")
 
-    x5_frame = prepare_frame_with_date(read_table(args.x5))
+    main_frame = prepare_frame_with_date(read_table(main_path))
     imoex_raw = _read_optional(args.imoex)
     usdrub_raw = _read_optional(args.usdrub)
     dataset_raw = _read_optional(args.dataset)
@@ -51,7 +55,7 @@ def main() -> None:
     usdrub_frame = prepare_frame_with_date(usdrub_raw) if usdrub_raw is not None else None
     dataset_frame = prepare_frame_with_date(dataset_raw) if dataset_raw is not None else None
 
-    summaries = [summarize_frame(x5_frame, name="x5")]
+    summaries = [summarize_frame(main_frame, name="main")]
     if imoex_frame is not None:
         summaries.append(summarize_frame(imoex_frame, name="imoex"))
     if usdrub_frame is not None:
@@ -70,8 +74,8 @@ def main() -> None:
         )
 
     print("\nHead previews:")
-    print("x5:")
-    print(x5_frame.head(args.head).to_string(index=False))
+    print("main:")
+    print(main_frame.head(args.head).to_string(index=False))
     if imoex_frame is not None:
         print("\nimoex:")
         print(imoex_frame.head(args.head).to_string(index=False))
@@ -83,12 +87,12 @@ def main() -> None:
         print(dataset_frame.head(args.head).to_string(index=False))
 
     plot_price_and_volume(
-        x5_frame,
-        output_dir / "x5_price_volume.png",
-        title="X5: Close and Volume",
+        main_frame,
+        output_dir / "main_price_volume.png",
+        title="Main Symbol: Close and Volume",
     )
     plot_context_normalized(
-        x5_frame,
+        main_frame,
         output_dir / "context_normalized.png",
         imoex_frame=imoex_frame,
         usdrub_frame=usdrub_frame,
