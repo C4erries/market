@@ -5,8 +5,15 @@ INTERVALS ?= 1d,5m
 START ?= 2018-01-01
 END ?= now
 MODE ?= incremental
+RAW_X5 ?= ./data/candles_x5_1d.parquet
+RAW_IMOEX ?= ./data/candles_imoex_1d.parquet
+RAW_USDRUB ?= ./data/candles_usdrub_1d.parquet
+RAW_CALENDAR ?=
+RAW_DIVIDENDS ?=
+ML_DATASET ?= ./data/model_ready/x5_next_day.parquet
+ML_ARTIFACTS ?= ./artifacts/ml
 
-.PHONY: help install install-dev env-check test compile check run run-full clean
+.PHONY: help install install-dev install-ml env-check test compile check run run-full ml-prepare ml-train ml-predict clean
 
 help:
 	@echo "Available targets:"
@@ -18,6 +25,10 @@ help:
 	@echo "  make check        - run compile + tests"
 	@echo "  make run          - run ETL in incremental mode"
 	@echo "  make run-full     - run ETL in full mode"
+	@echo "  make install-ml   - install ML dependencies"
+	@echo "  make ml-prepare   - build model-ready dataset"
+	@echo "  make ml-train     - train/evaluate models"
+	@echo "  make ml-predict   - inference on latest row"
 	@echo "  make clean        - remove Python cache files"
 
 install:
@@ -27,6 +38,9 @@ install:
 install-dev: install
 	$(PYTHON) -m pip install pytest
 
+install-ml:
+	$(PYTHON) -m pip install numpy pandas scikit-learn lightgbm matplotlib joblib pyarrow
+
 env-check:
 	$(PYTHON) -c "import os; print('TINVEST_ENV=', os.getenv('TINVEST_ENV', '<unset>')); print('TINVEST_SANDBOX_TOKEN=', 'set' if os.getenv('TINVEST_SANDBOX_TOKEN') else '<unset>')"
 
@@ -34,7 +48,7 @@ test:
 	$(PYTHON) -m unittest discover -s tests -p "test_*.py"
 
 compile:
-	$(PYTHON) -m compileall main.py download_data.py tinvest_client.py storage.py safety_guard.py tests
+	$(PYTHON) -m compileall main.py download_data.py tinvest_client.py storage.py safety_guard.py ml_pipeline prepare_features.py train_and_evaluate.py predict.py tests
 
 check: compile test
 
@@ -43,6 +57,15 @@ run:
 
 run-full:
 	$(PYTHON) download_data.py --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
+
+ml-prepare:
+	$(PYTHON) prepare_features.py --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
+
+ml-train:
+	$(PYTHON) train_and_evaluate.py --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
+
+ml-predict:
+	$(PYTHON) predict.py --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
 
 clean:
 	$(PYTHON) -c "from pathlib import Path; import shutil; [shutil.rmtree(p, ignore_errors=True) for p in Path('.').rglob('__pycache__')]"
