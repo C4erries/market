@@ -64,8 +64,10 @@ def infer_feature_columns(
 
 
 def compute_regression_metrics(y_true: pd.Series, pred: np.ndarray) -> dict[str, float]:
-    ic_pearson = float(pd.Series(pred).corr(pd.Series(y_true), method="pearson"))
-    ic_spearman = float(pd.Series(pred).corr(pd.Series(y_true), method="spearman"))
+    y_values = np.asarray(y_true, dtype=float)
+    pred_values = np.asarray(pred, dtype=float)
+    ic_pearson = float(pd.Series(pred_values).corr(pd.Series(y_values), method="pearson"))
+    ic_spearman = float(pd.Series(pred_values).corr(pd.Series(y_values), method="spearman"))
     return {
         "mae": float(mean_absolute_error(y_true, pred)),
         "rmse": float(np.sqrt(mean_squared_error(y_true, pred))),
@@ -163,15 +165,18 @@ def _ensure_lgbm_installed() -> None:
         raise RuntimeError("lightgbm is not installed. Install it before training.")
 
 
-def default_lgbm_params(random_state: int) -> dict[str, Any]:
+def default_lgbm_params(random_state: int, train_rows: int) -> dict[str, Any]:
+    adaptive_min_child = max(20, min(80, train_rows // 20))
     return {
         "objective": "regression",
-        "n_estimators": 2000,
+        "n_estimators": 1500,
         "learning_rate": 0.03,
-        "num_leaves": 63,
+        "num_leaves": 31,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
-        "min_child_samples": 100,
+        "min_child_samples": adaptive_min_child,
+        "reg_lambda": 0.5,
+        "verbosity": -1,
         "random_state": random_state,
     }
 
@@ -198,6 +203,31 @@ def _fit_lgbm_model(model: Any, x_train: pd.DataFrame, y_train: pd.Series, x_val
         fit_kwargs["callbacks"] = [lgb.early_stopping(stopping_rounds=100, verbose=False)]
     model.fit(x_train, y_train, **fit_kwargs)
     return model
+
+
+def build_model_quality_table(metrics: dict[str, dict[str, float]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+
+    def add_row(model_name: str, split: str, task: str, payload: dict[str, float]) -> None:
+        row: dict[str, Any] = {
+            "model": model_name,
+            "split": split,
+            "task": task,
+        }
+        row.update(payload)
+        rows.append(row)
+
+    add_row("ridge", "val", "regression", metrics["ridge_val_regression"])
+    add_row("ridge", "test", "regression", metrics["ridge_test_regression"])
+    add_row("lgbm_main", "val", "regression", metrics["lgbm_val_regression"])
+    add_row("lgbm_main", "test", "regression", metrics["lgbm_test_regression"])
+    add_row("logreg", "val", "direction", metrics["logreg_val_direction"])
+    add_row("logreg", "test", "direction", metrics["logreg_test_direction"])
+    add_row("lgbm_main", "test", "direction", metrics["lgbm_test_direction"])
+    add_row("strategy_main", "test", "strategy", metrics["strategy_main_test"])
+    add_row("strategy_selector", "test", "strategy", metrics["strategy_selector_test"])
+
+    return pd.DataFrame(rows)
 
 
 def train_and_evaluate(
@@ -247,7 +277,7 @@ def train_and_evaluate(
     logreg.fit(x_train, y_dir_train)
 
     _ensure_lgbm_installed()
-    lgb_params = default_lgbm_params(random_state=random_state)
+    lgb_params = default_lgbm_params(random_state=random_state, train_rows=len(x_train))
     main_model = LGBMRegressor(**lgb_params)
     main_model = _fit_lgbm_model(main_model, x_train, y_train, x_val, y_val)
 
@@ -333,6 +363,7 @@ def train_and_evaluate(
             "val_ratio": val_ratio,
             "test_ratio": test_ratio,
             "random_state": random_state,
+            "lgbm_params": lgb_params,
         },
     }
 
@@ -349,6 +380,8 @@ def train_and_evaluate(
     joblib.dump(main_model, models_dir / "main_lgbm.joblib")
     joblib.dump(upper_model, models_dir / "quantile_upper_lgbm.joblib")
     joblib.dump(lower_model, models_dir / "quantile_lower_lgbm.joblib")
+    saved_models = sorted([item.name for item in models_dir.glob("*.joblib")])
+    report["saved_models"] = saved_models
 
     _json_dump(artifacts_root / "feature_columns.json", {"feature_columns": feature_cols})
     _json_dump(artifacts_root / "strategy_config.json", report["strategy"])
@@ -356,6 +389,8 @@ def train_and_evaluate(
     _json_dump(artifacts_root / "run_report.json", report)
 
     threshold_table.to_csv(reports_dir / "threshold_search.csv", index=False)
+    quality_table = build_model_quality_table(report["metrics"])
+    quality_table.to_csv(reports_dir / "model_quality.csv", index=False)
 
     predictions = split.test[["date", "y", "y_dir"]].copy()
     predictions["pred_ridge"] = pred_test_ridge

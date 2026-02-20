@@ -39,6 +39,14 @@ SYMBOL_CLASS_HINTS = {
     "USDRUB": ["CETS"],
 }
 
+SYMBOL_QUERY_HINTS = {
+    "USDRUB": ["USD000UTSTOM", "USD000000TOD", "USDRUB"],
+}
+
+SYMBOL_DISALLOW_CLASS_CODES = {
+    "USDRUB": ["SPBFUT"],
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Download T-Invest historical market data")
@@ -186,6 +194,8 @@ def main() -> None:
             instrument = api.resolve_instrument(
                 symbol=symbol,
                 prefer_class_codes=SYMBOL_CLASS_HINTS.get(symbol),
+                query_candidates=SYMBOL_QUERY_HINTS.get(symbol),
+                disallow_class_codes=SYMBOL_DISALLOW_CLASS_CODES.get(symbol),
             )
             resolved[symbol] = instrument
             instrument_rows.append(

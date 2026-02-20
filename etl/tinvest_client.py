@@ -135,12 +135,41 @@ class TInvestClient:
         self,
         symbol: str,
         prefer_class_codes: Optional[Iterable[str]] = None,
+        query_candidates: Optional[Iterable[str]] = None,
+        disallow_class_codes: Optional[Iterable[str]] = None,
     ) -> InstrumentMeta:
         symbol_upper = symbol.strip().upper()
         preferred = {code.upper() for code in (prefer_class_codes or [])}
-        found = self.services.instruments.find_instrument(query=symbol_upper).instruments
+        disallowed = {code.upper() for code in (disallow_class_codes or [])}
+        queries = [symbol_upper]
+        if query_candidates:
+            queries.extend([item.strip().upper() for item in query_candidates if item and item.strip()])
+
+        all_found = []
+        seen_uids = set()
+        for query in queries:
+            items = self.services.instruments.find_instrument(query=query).instruments
+            for candidate in items:
+                uid = getattr(candidate, "uid", None)
+                if not uid or uid in seen_uids:
+                    continue
+                seen_uids.add(uid)
+                all_found.append(candidate)
+
+        found = all_found
         if not found:
             raise ValueError(f"Instrument not found for symbol/query: {symbol_upper}")
+
+        allowed_candidates = [
+            item for item in found if (item.class_code or "").upper() not in disallowed
+        ]
+        if allowed_candidates:
+            found = allowed_candidates
+        elif disallowed:
+            LOGGER.warning(
+                "No non-disallowed candidates for symbol=%s. Proceeding with full candidate list.",
+                symbol_upper,
+            )
 
         def score(candidate) -> int:
             candidate_ticker = (candidate.ticker or "").upper()
@@ -157,6 +186,13 @@ class TInvestClient:
                 result += 10
             if preferred and candidate_class_code in preferred:
                 result += 25
+            if symbol_upper == "USDRUB":
+                if candidate_class_code in {"CETS", "ETS"}:
+                    result += 120
+                if candidate_ticker in {"USD000UTSTOM", "USDRUB", "USD000000TOD"}:
+                    result += 80
+                if candidate_class_code in {"SPBFUT", "FUT"} or candidate_ticker.endswith("F"):
+                    result -= 100
             return result
 
         best = max(found, key=score)

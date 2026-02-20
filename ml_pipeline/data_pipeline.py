@@ -145,10 +145,10 @@ def make_features(df: pd.DataFrame, *, include_dividend_t_plus_1: bool = False) 
     close = features["close"].replace(0, np.nan)
     open_price = features["open"].replace(0, np.nan)
 
-    features["ret_1"] = close.pct_change(1)
-    features["ret_2"] = close.pct_change(2)
-    features["ret_5"] = close.pct_change(5)
-    features["ret_10"] = close.pct_change(10)
+    features["ret_1"] = close.pct_change(1, fill_method=None)
+    features["ret_2"] = close.pct_change(2, fill_method=None)
+    features["ret_5"] = close.pct_change(5, fill_method=None)
+    features["ret_10"] = close.pct_change(10, fill_method=None)
 
     for window in (5, 10, 20):
         features[f"volatility_{window}"] = features["ret_1"].rolling(window).std()
@@ -164,12 +164,12 @@ def make_features(df: pd.DataFrame, *, include_dividend_t_plus_1: bool = False) 
     features["volume_zscore_20"] = (features["log_volume"] - features["log_volume_mean_20"]) / volume_std_20
 
     if "close_imoex" in features.columns:
-        features["ret_imoex_1"] = features["close_imoex"].replace(0, np.nan).pct_change(1)
+        features["ret_imoex_1"] = features["close_imoex"].replace(0, np.nan).pct_change(1, fill_method=None)
         features["ret_imoex_mom_5"] = features["ret_imoex_1"].rolling(5).mean()
         features["ret_imoex_vol_20"] = features["ret_imoex_1"].rolling(20).std()
 
     if "close_usdrub" in features.columns:
-        features["ret_usdrub_1"] = features["close_usdrub"].replace(0, np.nan).pct_change(1)
+        features["ret_usdrub_1"] = features["close_usdrub"].replace(0, np.nan).pct_change(1, fill_method=None)
         features["ret_usdrub_mom_5"] = features["ret_usdrub_1"].rolling(5).mean()
         features["ret_usdrub_vol_20"] = features["ret_usdrub_1"].rolling(20).std()
 

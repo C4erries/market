@@ -101,7 +101,7 @@ Models:
 Saved artifacts:
 - models: `ridge.joblib`, `logreg.joblib`, `main_lgbm.joblib`, quantile models;
 - configs/metrics: `feature_columns.json`, `strategy_config.json`, `metrics.json`, `run_report.json`;
-- reports: threshold search table, test predictions, equity curves and plots.
+- reports: `threshold_search.csv`, `model_quality.csv`, test predictions, equity curves and plots.
 
 ### 3) Predict latest signal
 
@@ -119,6 +119,7 @@ Output: predicted return, threshold, and signal (`long` / `short` / `flat`) for 
 make ml-prepare
 make ml-train
 make ml-predict
+make ml-report
 ```
 
 ## Output

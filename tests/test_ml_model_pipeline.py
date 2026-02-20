@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ml_pipeline.model_pipeline import evaluate_strategy, tune_threshold
+from ml_pipeline.model_pipeline import compute_regression_metrics, evaluate_strategy, tune_threshold
 
 
 class MlModelPipelineTests(unittest.TestCase):
@@ -30,6 +30,14 @@ class MlModelPipelineTests(unittest.TestCase):
         )
         self.assertGreaterEqual(threshold, 0.0)
         self.assertFalse(table.empty)
+
+    def test_regression_metrics_ic_respects_values_not_index_alignment(self) -> None:
+        y_true = pd.Series([0.01, -0.01, 0.02, -0.02], index=[100, 101, 102, 103])
+        pred = np.array([0.01, -0.01, 0.02, -0.02], dtype=float)
+        metrics = compute_regression_metrics(y_true, pred)
+
+        self.assertGreater(metrics["ic_pearson"], 0.99)
+        self.assertGreater(metrics["ic_spearman"], 0.99)
 
 
 if __name__ == "__main__":

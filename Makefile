@@ -24,8 +24,9 @@ RAW_CALENDAR ?=
 RAW_DIVIDENDS ?=
 ML_DATASET ?= ./data/model_ready/x5_next_day.parquet
 ML_ARTIFACTS ?= ./artifacts/ml
+SYMBOL ?= X5
 
-.PHONY: help install install-dev install-ml env-check test compile check run run-full ml-build-raw ml-prepare ml-train ml-predict clean
+.PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-x5 run-imoex run-usdrub run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report clean
 
 help:
 	@echo "Available targets:"
@@ -38,11 +39,16 @@ help:
 	@echo "  make check        - run compile + tests"
 	@echo "  make run          - run ETL in incremental mode"
 	@echo "  make run-full     - run ETL in full mode"
+	@echo "  make run-symbol   - run ETL incremental for one symbol (use SYMBOL=X5/IMOEX/USDRUB)"
+	@echo "  make run-full-symbol - run ETL full for one symbol (use SYMBOL=...)"
+	@echo "  make run-x5 / run-imoex / run-usdrub - shortcuts for one-symbol incremental"
+	@echo "  make run-full-x5 / run-full-imoex / run-full-usdrub - shortcuts for one-symbol full"
 	@echo "  make install-ml   - install ML dependencies"
 	@echo "  make ml-build-raw - build flat 1D parquet files from partitioned candles"
 	@echo "  make ml-prepare   - build model-ready dataset"
 	@echo "  make ml-train     - train/evaluate models"
 	@echo "  make ml-predict   - inference on latest row"
+	@echo "  make ml-report    - print compact report for all trained models"
 	@echo "  make clean        - remove Python cache files"
 
 install:
@@ -72,6 +78,30 @@ run:
 run-full:
 	$(PYTHON) -m etl.download_data --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
 
+run-symbol:
+	$(PYTHON) -m etl.download_data --symbols "$(SYMBOL)" --intervals "$(INTERVALS)" --start "$(START)" --end "$(END)" --out "$(OUT)" --mode incremental
+
+run-full-symbol:
+	$(PYTHON) -m etl.download_data --symbols "$(SYMBOL)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
+
+run-x5:
+	$(MAKE) run-symbol SYMBOL=X5
+
+run-imoex:
+	$(MAKE) run-symbol SYMBOL=IMOEX
+
+run-usdrub:
+	$(MAKE) run-symbol SYMBOL=USDRUB
+
+run-full-x5:
+	$(MAKE) run-full-symbol SYMBOL=X5
+
+run-full-imoex:
+	$(MAKE) run-full-symbol SYMBOL=IMOEX
+
+run-full-usdrub:
+	$(MAKE) run-full-symbol SYMBOL=USDRUB
+
 ml-build-raw:
 	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_X5)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','X5'),('interval','==','1d')]); df.to_parquet('$(RAW_X5)', index=False); print('saved', len(df), 'rows to', '$(RAW_X5)')"
 	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_IMOEX)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','IMOEX'),('interval','==','1d')]); df.to_parquet('$(RAW_IMOEX)', index=False); print('saved', len(df), 'rows to', '$(RAW_IMOEX)')"
@@ -85,6 +115,9 @@ ml-train:
 
 ml-predict:
 	$(PYTHON) -m scripts.predict --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"
+
+ml-report:
+	$(PYTHON) -m scripts.ml_report --artifacts "$(ML_ARTIFACTS)"
 
 clean:
 	$(PYTHON) -c "from pathlib import Path; import shutil; [shutil.rmtree(p, ignore_errors=True) for p in Path('.').rglob('__pycache__')]"
