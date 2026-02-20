@@ -25,7 +25,7 @@ RAW_DIVIDENDS ?=
 ML_DATASET ?= ./data/model_ready/x5_next_day.parquet
 ML_ARTIFACTS ?= ./artifacts/ml
 
-.PHONY: help install install-dev install-ml env-check test compile check run run-full ml-prepare ml-train ml-predict clean
+.PHONY: help install install-dev install-ml env-check test compile check run run-full ml-build-raw ml-prepare ml-train ml-predict clean
 
 help:
 	@echo "Available targets:"
@@ -39,6 +39,7 @@ help:
 	@echo "  make run          - run ETL in incremental mode"
 	@echo "  make run-full     - run ETL in full mode"
 	@echo "  make install-ml   - install ML dependencies"
+	@echo "  make ml-build-raw - build flat 1D parquet files from partitioned candles"
 	@echo "  make ml-prepare   - build model-ready dataset"
 	@echo "  make ml-train     - train/evaluate models"
 	@echo "  make ml-predict   - inference on latest row"
@@ -70,6 +71,11 @@ run:
 
 run-full:
 	$(PYTHON) -m etl.download_data --symbols "$(SYMBOLS)" --intervals "$(INTERVALS)" --start max --end "$(END)" --out "$(OUT)" --mode full
+
+ml-build-raw:
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_X5)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','X5'),('interval','==','1d')]); df.to_parquet('$(RAW_X5)', index=False); print('saved', len(df), 'rows to', '$(RAW_X5)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_IMOEX)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','IMOEX'),('interval','==','1d')]); df.to_parquet('$(RAW_IMOEX)', index=False); print('saved', len(df), 'rows to', '$(RAW_IMOEX)')"
+	$(PYTHON) -c "from pathlib import Path; import pandas as pd; Path('$(RAW_USDRUB)').parent.mkdir(parents=True, exist_ok=True); df=pd.read_parquet('$(OUT)/candles', filters=[('symbol','==','USDRUB'),('interval','==','1d')]); df.to_parquet('$(RAW_USDRUB)', index=False); print('saved', len(df), 'rows to', '$(RAW_USDRUB)')"
 
 ml-prepare:
 	$(PYTHON) -m scripts.prepare_features --x5 "$(RAW_X5)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
