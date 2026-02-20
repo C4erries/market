@@ -1,3 +1,15 @@
+ENV_FILE ?= .env
+
+ifneq (,$(wildcard $(ENV_FILE)))
+include $(ENV_FILE)
+.EXPORT_ALL_VARIABLES:
+endif
+
+TINVEST_ENV ?= sandbox
+ifdef TOKEN_SANDBOX
+TINVEST_SANDBOX_TOKEN ?= $(TOKEN_SANDBOX)
+endif
+
 PYTHON ?= python
 OUT ?= ./data
 SYMBOLS ?= X5,IMOEX,USDRUB
@@ -17,6 +29,7 @@ ML_ARTIFACTS ?= ./artifacts/ml
 
 help:
 	@echo "Available targets:"
+	@echo "  (variables from .env are loaded automatically if .env exists)"
 	@echo "  make install      - install runtime dependencies"
 	@echo "  make install-dev  - install runtime + test dependencies"
 	@echo "  make env-check    - print sandbox env vars"
@@ -42,7 +55,7 @@ install-ml:
 	$(PYTHON) -m pip install numpy pandas scikit-learn lightgbm matplotlib joblib pyarrow
 
 env-check:
-	$(PYTHON) -c "import os; print('TINVEST_ENV=', os.getenv('TINVEST_ENV', '<unset>')); print('TINVEST_SANDBOX_TOKEN=', 'set' if os.getenv('TINVEST_SANDBOX_TOKEN') else '<unset>')"
+	$(PYTHON) -c "import os; from pathlib import Path; print('ENV_FILE=', '.env', 'exists' if Path('.env').exists() else 'missing'); print('TINVEST_ENV=', os.getenv('TINVEST_ENV', '<unset>')); print('TINVEST_SANDBOX_TOKEN=', 'set' if os.getenv('TINVEST_SANDBOX_TOKEN') else '<unset>')"
 
 test:
 	$(PYTHON) -m unittest discover -s tests -p "test_*.py"
