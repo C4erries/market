@@ -120,7 +120,37 @@ make ml-prepare
 make ml-train
 make ml-predict
 make ml-report
+make ml-diagnostics
+make ml-data-view
+make ml-model-plots
 ```
+
+### Data and model plots
+
+```bash
+make ml-data-view
+```
+
+Saves data overview to `./artifacts/ml/data_view`:
+- `x5_price_volume.png`
+- `context_normalized.png`
+- `target_distribution.png`
+- `missing_ratio.png`
+- `top_feature_correlations.png`
+- `data_summary.json`
+
+```bash
+make ml-model-plots
+```
+
+Saves model diagnostics to `./artifacts/ml/plots/model_diagnostics`:
+- predictions vs actual (`pred_vs_actual.png`)
+- prediction scatter (`pred_scatter.png`)
+- residual histogram (`residuals_hist.png`)
+- equity + drawdown (`equity_drawdown_main.png`)
+- signal distribution (`signal_distribution_main.png`)
+- threshold search (`threshold_search.png`, if available)
+- feature importance (`feature_importance_main_lgbm.png`, if available)
 
 ## Output
 
