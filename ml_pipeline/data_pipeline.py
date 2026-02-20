@@ -12,6 +12,7 @@ DATE_CANDIDATES = ("date", "ts", "datetime", "time")
 OHLCV_FIELDS = ("open", "high", "low", "close", "volume")
 DIVIDEND_DATE_CANDIDATES = ("record_date", "last_buy_date", "payment_date", "declared_date", "date", "ts")
 DIVIDEND_AMOUNT_CANDIDATES = ("dividend_net", "amount", "value")
+CONTEXT_SUFFIXES = ("imoex", "usdrub")
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,45 @@ def _prepare_market_frame(frame: pd.DataFrame, suffix: str = "") -> pd.DataFrame
     return result.sort_values("date").reset_index(drop=True)
 
 
+def _build_context_features(context_frame: pd.DataFrame, *, prefix: str) -> pd.DataFrame:
+    close_col = f"close_{prefix}"
+    if close_col not in context_frame.columns:
+        raise ValueError(f"Missing required context close column: {close_col}")
+
+    context = context_frame[["date", close_col]].copy()
+    context[close_col] = pd.to_numeric(context[close_col], errors="coerce")
+    context = context.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
+
+    ret_col = f"ret_{prefix}_1"
+    context[ret_col] = context[close_col].replace(0, np.nan).pct_change(1, fill_method=None)
+    context[f"ret_{prefix}_mom_5"] = context[ret_col].rolling(5).mean()
+    context[f"ret_{prefix}_vol_20"] = context[ret_col].rolling(20).std()
+    context[f"context_date_{prefix}"] = context["date"]
+    return context[
+        [
+            "date",
+            f"context_date_{prefix}",
+            ret_col,
+            f"ret_{prefix}_mom_5",
+            f"ret_{prefix}_vol_20",
+        ]
+    ]
+
+
+def _merge_context_features(base_frame: pd.DataFrame, context_frame: pd.DataFrame, *, prefix: str) -> pd.DataFrame:
+    left = base_frame.sort_values("date").reset_index(drop=True)
+    right = context_frame.sort_values("date").reset_index(drop=True)
+    merged = pd.merge_asof(left, right, on="date", direction="backward")
+
+    context_date_col = f"context_date_{prefix}"
+    if context_date_col in merged.columns:
+        age_col = f"context_age_days_{prefix}"
+        merged[age_col] = (merged["date"] - merged[context_date_col]).dt.days
+        merged[age_col] = pd.to_numeric(merged[age_col], errors="coerce").fillna(10_000.0)
+        merged = merged.drop(columns=[context_date_col])
+    return merged
+
+
 def _prepare_calendar_frame(frame: pd.DataFrame) -> pd.DataFrame:
     calendar = pd.DataFrame()
     calendar["date"] = _normalize_date_column(frame)
@@ -117,11 +157,11 @@ def load_data(
 
     if imoex_path:
         imoex = _prepare_market_frame(_read_local_table(imoex_path), suffix="imoex")
-        result = result.merge(imoex, on="date", how="left")
+        result = _merge_context_features(result, _build_context_features(imoex, prefix="imoex"), prefix="imoex")
 
     if usdrub_path:
         usdrub = _prepare_market_frame(_read_local_table(usdrub_path), suffix="usdrub")
-        result = result.merge(usdrub, on="date", how="left")
+        result = _merge_context_features(result, _build_context_features(usdrub, prefix="usdrub"), prefix="usdrub")
 
     if calendar_path:
         calendar = _prepare_calendar_frame(_read_local_table(calendar_path))
@@ -165,15 +205,31 @@ def make_features(df: pd.DataFrame, *, include_dividend_t_plus_1: bool = False) 
     volume_std_20 = features["log_volume"].rolling(20).std()
     features["volume_zscore_20"] = (features["log_volume"] - features["log_volume_mean_20"]) / volume_std_20
 
-    if "close_imoex" in features.columns:
+    if "ret_imoex_1" in features.columns:
+        features["ret_imoex_1"] = pd.to_numeric(features["ret_imoex_1"], errors="coerce")
+        if "ret_imoex_mom_5" in features.columns:
+            features["ret_imoex_mom_5"] = pd.to_numeric(features["ret_imoex_mom_5"], errors="coerce")
+        if "ret_imoex_vol_20" in features.columns:
+            features["ret_imoex_vol_20"] = pd.to_numeric(features["ret_imoex_vol_20"], errors="coerce")
+    elif "close_imoex" in features.columns:
         features["ret_imoex_1"] = features["close_imoex"].replace(0, np.nan).pct_change(1, fill_method=None)
         features["ret_imoex_mom_5"] = features["ret_imoex_1"].rolling(5).mean()
         features["ret_imoex_vol_20"] = features["ret_imoex_1"].rolling(20).std()
+    if "context_age_days_imoex" in features.columns:
+        features["context_age_days_imoex"] = pd.to_numeric(features["context_age_days_imoex"], errors="coerce").fillna(10_000.0)
 
-    if "close_usdrub" in features.columns:
+    if "ret_usdrub_1" in features.columns:
+        features["ret_usdrub_1"] = pd.to_numeric(features["ret_usdrub_1"], errors="coerce")
+        if "ret_usdrub_mom_5" in features.columns:
+            features["ret_usdrub_mom_5"] = pd.to_numeric(features["ret_usdrub_mom_5"], errors="coerce")
+        if "ret_usdrub_vol_20" in features.columns:
+            features["ret_usdrub_vol_20"] = pd.to_numeric(features["ret_usdrub_vol_20"], errors="coerce")
+    elif "close_usdrub" in features.columns:
         features["ret_usdrub_1"] = features["close_usdrub"].replace(0, np.nan).pct_change(1, fill_method=None)
         features["ret_usdrub_mom_5"] = features["ret_usdrub_1"].rolling(5).mean()
         features["ret_usdrub_vol_20"] = features["ret_usdrub_1"].rolling(20).std()
+    if "context_age_days_usdrub" in features.columns:
+        features["context_age_days_usdrub"] = pd.to_numeric(features["context_age_days_usdrub"], errors="coerce").fillna(10_000.0)
 
     features["day_of_week"] = features["date"].dt.dayofweek.astype(int)
     features["month"] = features["date"].dt.month.astype(int)
@@ -184,6 +240,16 @@ def make_features(df: pd.DataFrame, *, include_dividend_t_plus_1: bool = False) 
     if include_dividend_t_plus_1:
         # Use only if dividend calendar for t+1 is known ex-ante.
         features["dividend_flag_t_plus_1"] = features["dividend_flag_t"].shift(-1).fillna(0).astype(int)
+
+    # Keep context-derived features, but drop raw context OHLCV columns to avoid NaN-driven row loss.
+    context_raw_cols = [
+        f"{field}_{suffix}"
+        for suffix in CONTEXT_SUFFIXES
+        for field in OHLCV_FIELDS
+        if f"{field}_{suffix}" in features.columns
+    ]
+    if context_raw_cols:
+        features = features.drop(columns=context_raw_cols)
 
     return features
 
