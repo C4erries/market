@@ -45,6 +45,7 @@ class SplitRunResult:
     models: dict[str, Any]
     predictions_test: pd.DataFrame
     sanity_checks: dict[str, float | bool]
+    prediction_scale_main: float
 
 
 def _to_serializable(value: Any) -> Any:
@@ -129,6 +130,23 @@ def _safe_mean(values: np.ndarray) -> float:
     return mean if np.isfinite(mean) else 0.0
 
 
+def _safe_abs_quantile(values: np.ndarray, quantile: float) -> float:
+    series = np.asarray(values, dtype=float)
+    if series.size == 0:
+        return 0.0
+    abs_series = np.abs(series)
+    value = float(np.quantile(abs_series, quantile))
+    return value if np.isfinite(value) else 0.0
+
+
+def _safe_abs_max(values: np.ndarray) -> float:
+    series = np.asarray(values, dtype=float)
+    if series.size == 0:
+        return 0.0
+    value = float(np.max(np.abs(series)))
+    return value if np.isfinite(value) else 0.0
+
+
 def build_sanity_checks(
     *,
     y_val: np.ndarray,
@@ -146,11 +164,15 @@ def build_sanity_checks(
     return {
         "pred_main_mean_val": _safe_mean(pred_val),
         "pred_main_std_val": pred_val_std,
+        "pred_main_abs_p90_val": _safe_abs_quantile(pred_val, 0.90),
+        "pred_main_abs_max_val": _safe_abs_max(pred_val),
         "y_mean_val": _safe_mean(y_val),
         "y_std_val": y_val_std,
         "pred_to_y_std_ratio_val": float(ratio_val),
         "pred_main_mean_test": _safe_mean(pred_test),
         "pred_main_std_test": pred_test_std,
+        "pred_main_abs_p90_test": _safe_abs_quantile(pred_test, 0.90),
+        "pred_main_abs_max_test": _safe_abs_max(pred_test),
         "y_mean_test": _safe_mean(y_test),
         "y_std_test": y_test_std,
         "pred_to_y_std_ratio_test": float(ratio_test),
@@ -298,16 +320,15 @@ def _ensure_lgbm_installed() -> None:
 
 
 def default_lgbm_params(random_state: int, train_rows: int) -> dict[str, Any]:
-    adaptive_min_child = max(20, min(120, max(20, train_rows // 20)))
     return {
         "objective": "regression",
-        "n_estimators": 1800,
-        "learning_rate": 0.025,
+        "n_estimators": 2500,
+        "learning_rate": 0.02,
         "num_leaves": 31,
-        "max_depth": -1,
+        "max_depth": 6,
         "subsample": 0.85,
         "colsample_bytree": 0.85,
-        "min_child_samples": adaptive_min_child,
+        "min_child_samples": 30,
         "min_split_gain": 0.0,
         "reg_lambda": 0.5,
         "reg_alpha": 0.0,
@@ -318,57 +339,23 @@ def default_lgbm_params(random_state: int, train_rows: int) -> dict[str, Any]:
 
 def lgbm_candidate_params(random_state: int, train_rows: int) -> list[dict[str, Any]]:
     base = default_lgbm_params(random_state=random_state, train_rows=train_rows)
-    child = base["min_child_samples"]
-    return [
-        {
-            **base,
-            "num_leaves": 31,
-            "max_depth": -1,
-            "learning_rate": 0.03,
-            "min_child_samples": max(10, child - 20),
-            "subsample": 0.90,
-            "colsample_bytree": 0.90,
-            "reg_lambda": 0.1,
-            "reg_alpha": 0.0,
-            "min_split_gain": 0.0,
-        },
-        {
-            **base,
-            "num_leaves": 31,
-            "max_depth": 6,
-            "learning_rate": 0.025,
-            "min_child_samples": child,
-            "subsample": 0.80,
-            "colsample_bytree": 0.80,
-            "reg_lambda": 0.5,
-            "reg_alpha": 0.0,
-            "min_split_gain": 0.0,
-        },
-        {
-            **base,
-            "num_leaves": 47,
-            "max_depth": 7,
-            "learning_rate": 0.02,
-            "min_child_samples": min(140, child + 20),
-            "subsample": 0.75,
-            "colsample_bytree": 0.75,
-            "reg_lambda": 1.0,
-            "reg_alpha": 0.05,
-            "min_split_gain": 0.0,
-        },
-        {
-            **base,
-            "num_leaves": 63,
-            "max_depth": 8,
-            "learning_rate": 0.015,
-            "min_child_samples": min(180, child + 40),
-            "subsample": 0.70,
-            "colsample_bytree": 0.70,
-            "reg_lambda": 1.5,
-            "reg_alpha": 0.1,
-            "min_split_gain": 0.005,
-        },
-    ]
+    learning_rates = (0.03, 0.02)
+    leaf_depth_pairs = ((31, 6), (63, 8))
+    min_child_values = (15, 30, 60)
+    candidates: list[dict[str, Any]] = []
+    for learning_rate in learning_rates:
+        for num_leaves, max_depth in leaf_depth_pairs:
+            for min_child_samples in min_child_values:
+                candidates.append(
+                    {
+                        **base,
+                        "learning_rate": float(learning_rate),
+                        "num_leaves": int(num_leaves),
+                        "max_depth": int(max_depth),
+                        "min_child_samples": int(min_child_samples),
+                    }
+                )
+    return candidates
 
 
 def _plot_equity_curve(curve: pd.DataFrame, output_path: Path, title: str) -> None:
@@ -395,38 +382,139 @@ def _fit_lgbm_model(model: Any, x_train: pd.DataFrame, y_train: pd.Series, x_val
     return model
 
 
+def score_lgbm_candidate(
+    *,
+    val_sharpe: float,
+    val_ic_spearman: float,
+    val_ic_pearson: float,
+    overfit_gap: float,
+    val_pred_to_y_std_ratio: float,
+    val_exposure: float,
+) -> float:
+    clipped_sharpe = float(np.clip(val_sharpe, -3.0, 3.0))
+    score = 0.70 * clipped_sharpe + 0.20 * float(val_ic_spearman) + 0.10 * float(val_ic_pearson) - 0.35 * float(overfit_gap)
+    if float(val_pred_to_y_std_ratio) < 0.01:
+        score -= 0.30
+    if float(val_exposure) < 0.15:
+        score -= 0.20
+    return float(score)
+
+
+def choose_prediction_scale(
+    *,
+    y_val: np.ndarray,
+    pred_val: np.ndarray,
+    dates_val: pd.Series,
+    threshold_quantiles: tuple[float, ...],
+    min_threshold: float,
+    cost_bps: float,
+    overfit_gap: float,
+    scale_grid: tuple[float, ...] = (1.0, 2.0, 4.0, 6.0, 8.0, 12.0),
+) -> dict[str, float]:
+    best_scale = float(scale_grid[0])
+    best_threshold = float(min_threshold)
+    best_sharpe = -np.inf
+    best_exposure = -np.inf
+    best_overfit_gap = np.inf
+    for scale in scale_grid:
+        scaled_pred = np.asarray(pred_val, dtype=float) * float(scale)
+        threshold, _ = tune_threshold(
+            y_val=np.asarray(y_val, dtype=float),
+            pred_val=scaled_pred,
+            dates_val=dates_val,
+            quantiles=threshold_quantiles,
+            cost_bps=cost_bps,
+            min_threshold=min_threshold,
+        )
+        strategy = evaluate_strategy(
+            y_true=np.asarray(y_val, dtype=float),
+            pred=scaled_pred,
+            threshold=float(threshold),
+            cost_bps=cost_bps,
+            dates=dates_val,
+        )
+        sharpe = float(strategy.metrics["sharpe"])
+        exposure = float(strategy.metrics["exposure"])
+        is_better = False
+        if sharpe > best_sharpe:
+            is_better = True
+        elif np.isclose(sharpe, best_sharpe):
+            if exposure > best_exposure:
+                is_better = True
+            elif np.isclose(exposure, best_exposure) and overfit_gap < best_overfit_gap:
+                is_better = True
+        if is_better:
+            best_scale = float(scale)
+            best_threshold = float(threshold)
+            best_sharpe = sharpe
+            best_exposure = exposure
+            best_overfit_gap = float(overfit_gap)
+
+    return {
+        "scale": best_scale,
+        "threshold": best_threshold,
+        "val_strategy_sharpe": float(best_sharpe if np.isfinite(best_sharpe) else 0.0),
+        "val_strategy_exposure": float(best_exposure if np.isfinite(best_exposure) else 0.0),
+    }
+
+
 def select_best_lgbm_model(
     *,
     x_train: pd.DataFrame,
     y_train: pd.Series,
     x_val: pd.DataFrame,
     y_val: pd.Series,
+    dates_val: pd.Series,
+    threshold_quantiles: tuple[float, ...],
+    threshold_cost_multiplier: float,
     random_state: int,
-) -> tuple[Any, dict[str, Any], pd.DataFrame]:
+    selection_cost_bps: float = 10.0,
+) -> tuple[Any, dict[str, Any], float, pd.DataFrame]:
     candidates = lgbm_candidate_params(random_state=random_state, train_rows=len(x_train))
     scored_rows: list[dict[str, Any]] = []
     models_by_id: dict[int, Any] = {}
     params_by_id: dict[int, dict[str, Any]] = {}
+    scale_by_id: dict[int, float] = {}
     train_y_std = _safe_std(y_train.to_numpy())
     val_y_std = _safe_std(y_val.to_numpy())
+    min_threshold_selection = min_threshold_from_cost(cost_bps=selection_cost_bps, threshold_cost_multiplier=threshold_cost_multiplier)
 
     for idx, params in enumerate(candidates):
         model = LGBMRegressor(**params)
         model = _fit_lgbm_model(model, x_train, y_train, x_val, y_val)
         models_by_id[idx] = model
         params_by_id[idx] = params
-        pred_train = model.predict(x_train)
-        pred_val = model.predict(x_val)
+        pred_train = np.asarray(model.predict(x_train), dtype=float)
+        pred_val = np.asarray(model.predict(x_val), dtype=float)
         train_metrics = compute_regression_metrics(y_train, pred_train)
         val_metrics = compute_regression_metrics(y_val, pred_val)
-        train_var_ratio = 0.0 if train_y_std <= 0 else _safe_std(pred_train) / train_y_std
-        val_var_ratio = 0.0 if val_y_std <= 0 else _safe_std(pred_val) / val_y_std
+        train_var_ratio_raw = 0.0 if train_y_std <= 0 else _safe_std(pred_train) / train_y_std
+        val_var_ratio_raw = 0.0 if val_y_std <= 0 else _safe_std(pred_val) / val_y_std
 
         overfit_gap = abs(train_metrics["ic_spearman"] - val_metrics["ic_spearman"])
-        score = 0.65 * val_metrics["ic_spearman"] + 0.35 * val_metrics["ic_pearson"] - 0.60 * overfit_gap
-        score += 0.10 * min(1.0, float(val_var_ratio))
-        if val_var_ratio < 0.02:
-            score -= 0.35
+        scale_choice = choose_prediction_scale(
+            y_val=y_val.to_numpy(),
+            pred_val=pred_val,
+            dates_val=dates_val,
+            threshold_quantiles=threshold_quantiles,
+            min_threshold=min_threshold_selection,
+            cost_bps=selection_cost_bps,
+            overfit_gap=overfit_gap,
+        )
+        selected_scale = float(scale_choice["scale"])
+        val_strategy_sharpe = float(scale_choice["val_strategy_sharpe"])
+        val_strategy_exposure = float(scale_choice["val_strategy_exposure"])
+        scale_by_id[idx] = selected_scale
+        train_var_ratio = float(train_var_ratio_raw * selected_scale)
+        val_var_ratio = float(val_var_ratio_raw * selected_scale)
+        score = score_lgbm_candidate(
+            val_sharpe=val_strategy_sharpe,
+            val_ic_spearman=val_metrics["ic_spearman"],
+            val_ic_pearson=val_metrics["ic_pearson"],
+            overfit_gap=overfit_gap,
+            val_pred_to_y_std_ratio=val_var_ratio,
+            val_exposure=val_strategy_exposure,
+        )
 
         row = {
             "candidate_id": idx,
@@ -435,9 +523,13 @@ def select_best_lgbm_model(
             "val_ic_spearman": val_metrics["ic_spearman"],
             "val_ic_pearson": val_metrics["ic_pearson"],
             "val_rmse": val_metrics["rmse"],
+            "val_strategy_sharpe": val_strategy_sharpe,
+            "val_strategy_exposure": val_strategy_exposure,
+            "val_strategy_threshold": float(scale_choice["threshold"]),
             "overfit_gap": float(overfit_gap),
             "train_pred_to_y_std_ratio": float(train_var_ratio),
             "val_pred_to_y_std_ratio": float(val_var_ratio),
+            "selected_scale": selected_scale,
             "best_iteration": int(getattr(model, "best_iteration_", -1) or -1),
             "params": json.dumps(_to_serializable(params), ensure_ascii=False),
         }
@@ -446,25 +538,32 @@ def select_best_lgbm_model(
     if scored.empty:
         raise RuntimeError("Failed to select LGBM model from candidates.")
 
-    min_viable_ratio = 0.002
+    min_viable_ratio = 0.005
     viable = scored[scored["val_pred_to_y_std_ratio"] >= min_viable_ratio].copy()
     if viable.empty:
         selected_row = scored.iloc[0]
+        LOGGER.warning(
+            "No LGBM candidate reached val_pred_to_y_std_ratio >= %.4f; using best score fallback.",
+            min_viable_ratio,
+        )
     else:
         selected_row = viable.sort_values("score", ascending=False).iloc[0]
     selected_candidate_id = int(selected_row["candidate_id"])
     best_model = models_by_id[selected_candidate_id]
     best_params = params_by_id[selected_candidate_id]
+    best_scale = scale_by_id[selected_candidate_id]
 
     scored["selected"] = scored["candidate_id"] == selected_candidate_id
     scored = scored.sort_values(["selected", "score"], ascending=[False, False]).reset_index(drop=True)
     LOGGER.info(
-        "Selected LGBM candidate id=%s score=%.6f val_ic_spearman=%.6f overfit_gap=%.6f val_ratio=%.4f",
+        "Selected LGBM candidate id=%s score=%.6f val_sharpe=%.4f val_ic_spearman=%.6f overfit_gap=%.6f val_ratio=%.4f scale=%.2f",
         int(scored.loc[0, "candidate_id"]),
         float(scored.loc[0, "score"]),
+        float(scored.loc[0, "val_strategy_sharpe"]),
         float(scored.loc[0, "val_ic_spearman"]),
         float(scored.loc[0, "overfit_gap"]),
         float(scored.loc[0, "val_pred_to_y_std_ratio"]),
+        float(scored.loc[0, "selected_scale"]),
     )
     if float(scored.loc[0, "val_pred_to_y_std_ratio"]) < 0.02:
         LOGGER.warning(
@@ -472,7 +571,7 @@ def select_best_lgbm_model(
             "Revisit feature engineering or loosen regularization further.",
             float(scored.loc[0, "val_pred_to_y_std_ratio"]),
         )
-    return best_model, best_params, scored
+    return best_model, best_params, float(best_scale), scored
 
 
 def _logreg_signed_score(model: Any, features: pd.DataFrame) -> np.ndarray:
@@ -522,8 +621,16 @@ def _run_single_split(
     logreg.fit(x_train, y_dir_train)
 
     _ensure_lgbm_installed()
-    main_model, lgb_params, lgbm_selection_table = select_best_lgbm_model(
-        x_train=x_train, y_train=y_train, x_val=x_val, y_val=y_val, random_state=random_state
+    main_model, lgb_params, prediction_scale_main, lgbm_selection_table = select_best_lgbm_model(
+        x_train=x_train,
+        y_train=y_train,
+        x_val=x_val,
+        y_val=y_val,
+        dates_val=split.val["date"],
+        threshold_quantiles=threshold_quantiles,
+        threshold_cost_multiplier=threshold_cost_multiplier,
+        random_state=random_state,
+        selection_cost_bps=10.0,
     )
     upper_model = LGBMRegressor(**{**lgb_params, "objective": "quantile", "alpha": selector_alpha_high})
     lower_model = LGBMRegressor(**{**lgb_params, "objective": "quantile", "alpha": selector_alpha_low})
@@ -536,19 +643,21 @@ def _run_single_split(
     pred_test_logreg = logreg.predict(x_test)
     pred_val_logreg_score = _logreg_signed_score(logreg, x_val)
     pred_test_logreg_score = _logreg_signed_score(logreg, x_test)
-    pred_val_main = main_model.predict(x_val)
-    pred_test_main = main_model.predict(x_test)
+    pred_val_main_raw = np.asarray(main_model.predict(x_val), dtype=float)
+    pred_test_main_raw = np.asarray(main_model.predict(x_test), dtype=float)
+    pred_val_main = pred_val_main_raw * float(prediction_scale_main)
+    pred_test_main = pred_test_main_raw * float(prediction_scale_main)
     pred_test_upper = upper_model.predict(x_test)
     pred_test_lower = lower_model.predict(x_test)
 
     min_threshold = min_threshold_from_cost(cost_bps=cost_bps, threshold_cost_multiplier=threshold_cost_multiplier)
-    max_abs_pred_val_main = float(np.max(np.abs(pred_val_main))) if len(pred_val_main) > 0 else 0.0
-    if min_threshold > 0 and max_abs_pred_val_main < min_threshold:
+    p90_abs_pred_val_main = _safe_abs_quantile(pred_val_main, 0.90)
+    if min_threshold > 0 and p90_abs_pred_val_main < min_threshold:
         LOGGER.warning(
-            "Cost-derived threshold_min=%.6f is above max|pred_val_main|=%.6f. "
+            "Cost-derived threshold_min=%.6f is above p90(|pred_val_main|)=%.6f. "
             "Main strategy will likely stay flat; reduce cost_bps or threshold_cost_multiplier.",
             float(min_threshold),
-            max_abs_pred_val_main,
+            p90_abs_pred_val_main,
         )
     threshold_main, threshold_table_main = tune_threshold(
         y_val=y_val.to_numpy(),
@@ -603,6 +712,7 @@ def _run_single_split(
     predictions_test = split.test[["date", "y", "y_dir"]].copy()
     predictions_test["pred_ridge"] = pred_test_ridge
     predictions_test["pred_main_lgbm"] = pred_test_main
+    predictions_test["pred_main_lgbm_raw"] = pred_test_main_raw
     predictions_test["pred_logreg_score"] = pred_test_logreg_score
     predictions_test["pred_logreg_dir"] = pred_test_logreg
     predictions_test["pred_quantile_upper"] = pred_test_upper
@@ -620,6 +730,7 @@ def _run_single_split(
         models={"ridge": ridge, "logreg": logreg, "main_lgbm": main_model, "quantile_upper_lgbm": upper_model, "quantile_lower_lgbm": lower_model},
         predictions_test=predictions_test,
         sanity_checks=sanity_checks,
+        prediction_scale_main=float(prediction_scale_main),
     )
 
 
@@ -758,6 +869,7 @@ def _run_walk_forward(
             "strategy_selector_test_exposure": result.metrics["strategy_selector_test"]["exposure"],
             "threshold_main": result.thresholds["threshold_main"],
             "threshold_min": result.thresholds["threshold_min"],
+            "prediction_scale_main": float(result.prediction_scale_main),
             "sanity_pred_std_test": float(result.sanity_checks["pred_main_std_test"]),
             "sanity_y_std_test": float(result.sanity_checks["y_std_test"]),
             "sanity_pred_to_y_std_ratio_test": float(result.sanity_checks["pred_to_y_std_ratio_test"]),
@@ -849,10 +961,11 @@ def train_and_evaluate(
         feature_cols=feature_cols,
     )
     LOGGER.info(
-        "Thresholds selected: main=%.6f logreg=%.6f thr_min=%.6f",
+        "Thresholds selected: main=%.6f logreg=%.6f thr_min=%.6f pred_scale=%.3f",
         split_result.thresholds["threshold_main"],
         split_result.thresholds["threshold_logreg"],
         split_result.thresholds["threshold_min"],
+        float(split_result.prediction_scale_main),
     )
     LOGGER.info(
         "Sanity checks: pred_std_test=%.6f y_std_test=%.6f ratio=%.4f warning=%s",
@@ -904,6 +1017,7 @@ def train_and_evaluate(
             "threshold_logreg": float(split_result.thresholds["threshold_logreg"]),
             "threshold_selector": float(split_result.thresholds["threshold_selector"]),
             "threshold_min": float(split_result.thresholds["threshold_min"]),
+            "prediction_scale_main": float(split_result.prediction_scale_main),
             "threshold_cost_multiplier": float(threshold_cost_multiplier),
             "threshold_quantiles": list(threshold_quantiles),
             "cost_bps": float(cost_bps),
@@ -924,6 +1038,7 @@ def train_and_evaluate(
             "test_ratio": test_ratio,
             "random_state": random_state,
             "lgbm_params": split_result.lgbm_params,
+            "prediction_scale_main": float(split_result.prediction_scale_main),
             "wf_enable": bool(wf_enable),
             "wf_folds": int(wf_folds),
             "wf_expanding": bool(wf_expanding),
@@ -987,6 +1102,7 @@ def predict_latest_signal(
     feature_columns = json.loads((artifacts_root / "feature_columns.json").read_text(encoding="utf-8"))["feature_columns"]
     strategy_config = json.loads((artifacts_root / "strategy_config.json").read_text(encoding="utf-8"))
     threshold = float(strategy_config["threshold"])
+    prediction_scale_main = float(strategy_config.get("prediction_scale_main", 1.0))
 
     model_path = artifacts_root / "models" / f"{model_name}.joblib"
     if not model_path.exists():
@@ -995,7 +1111,8 @@ def predict_latest_signal(
 
     latest_row = dataset.sort_values("date").iloc[-1]
     x_latest = pd.DataFrame([latest_row[feature_columns].to_dict()])
-    pred = float(model.predict(x_latest)[0])
+    pred_raw = float(model.predict(x_latest)[0])
+    pred = float(pred_raw * prediction_scale_main)
 
     signal = 0
     if pred > threshold:
@@ -1006,6 +1123,8 @@ def predict_latest_signal(
     return {
         "date": str(pd.to_datetime(latest_row["date"]).date()),
         "prediction": pred,
+        "prediction_raw": pred_raw,
+        "prediction_scale_main": prediction_scale_main,
         "threshold": threshold,
         "signal": signal,
         "signal_label": {1: "long", -1: "short", 0: "flat"}[signal],
