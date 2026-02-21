@@ -7,7 +7,9 @@ from ml_pipeline.model_pipeline import (
     build_sanity_checks,
     build_selector_signal,
     compute_regression_metrics,
+    default_lgbm_params,
     evaluate_strategy,
+    lgbm_candidate_params,
     min_threshold_from_cost,
     tune_threshold,
 )
@@ -62,6 +64,15 @@ class MlModelPipelineTests(unittest.TestCase):
         pred = np.zeros_like(y)
         sanity = build_sanity_checks(y_val=y, pred_val=pred, y_test=y, pred_test=pred)
         self.assertTrue(bool(sanity["pred_collapse_warning"]))
+
+    def test_lgbm_candidates_include_non_overconstrained_options(self) -> None:
+        params = default_lgbm_params(random_state=42, train_rows=1500)
+        candidates = lgbm_candidate_params(random_state=42, train_rows=1500)
+
+        self.assertLessEqual(params["min_child_samples"], 120)
+        self.assertAlmostEqual(float(params["min_split_gain"]), 0.0)
+        self.assertGreaterEqual(min(item["min_child_samples"] for item in candidates), 10)
+        self.assertTrue(any(float(item["min_split_gain"]) == 0.0 for item in candidates))
 
 
 if __name__ == "__main__":

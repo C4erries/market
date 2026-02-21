@@ -88,8 +88,14 @@ def infer_feature_columns(
 def compute_regression_metrics(y_true: pd.Series, pred: np.ndarray) -> dict[str, float]:
     y_values = np.asarray(y_true, dtype=float)
     pred_values = np.asarray(pred, dtype=float)
-    ic_pearson = float(pd.Series(pred_values).corr(pd.Series(y_values), method="pearson"))
-    ic_spearman = float(pd.Series(pred_values).corr(pd.Series(y_values), method="spearman"))
+    y_std = _safe_std(y_values)
+    pred_std = _safe_std(pred_values)
+    if y_std <= 0 or pred_std <= 0:
+        ic_pearson = 0.0
+        ic_spearman = 0.0
+    else:
+        ic_pearson = float(pd.Series(pred_values).corr(pd.Series(y_values), method="pearson"))
+        ic_spearman = float(pd.Series(pred_values).corr(pd.Series(y_values), method="spearman"))
     return {
         "mae": float(mean_absolute_error(y_true, pred)),
         "rmse": float(np.sqrt(mean_squared_error(y_true, pred))),
@@ -110,6 +116,8 @@ def _safe_std(values: np.ndarray) -> float:
     if series.size == 0:
         return 0.0
     std = float(np.std(series, ddof=0))
+    if std < 1e-12:
+        return 0.0
     return std if np.isfinite(std) else 0.0
 
 
@@ -290,19 +298,19 @@ def _ensure_lgbm_installed() -> None:
 
 
 def default_lgbm_params(random_state: int, train_rows: int) -> dict[str, Any]:
-    adaptive_min_child = max(100, min(300, max(100, train_rows // 6)))
+    adaptive_min_child = max(20, min(120, max(20, train_rows // 20)))
     return {
         "objective": "regression",
-        "n_estimators": 2200,
-        "learning_rate": 0.02,
+        "n_estimators": 1800,
+        "learning_rate": 0.025,
         "num_leaves": 31,
-        "max_depth": 5,
-        "subsample": 0.8,
-        "colsample_bytree": 0.8,
+        "max_depth": -1,
+        "subsample": 0.85,
+        "colsample_bytree": 0.85,
         "min_child_samples": adaptive_min_child,
-        "min_split_gain": 0.02,
-        "reg_lambda": 2.0,
-        "reg_alpha": 0.5,
+        "min_split_gain": 0.0,
+        "reg_lambda": 0.5,
+        "reg_alpha": 0.0,
         "verbosity": -1,
         "random_state": random_state,
     }
@@ -315,47 +323,50 @@ def lgbm_candidate_params(random_state: int, train_rows: int) -> list[dict[str, 
         {
             **base,
             "num_leaves": 31,
-            "max_depth": 4,
-            "min_child_samples": min(300, child + 20),
-            "subsample": 0.85,
-            "colsample_bytree": 0.85,
-            "reg_lambda": 2.0,
-            "reg_alpha": 0.6,
-            "min_split_gain": 0.03,
+            "max_depth": -1,
+            "learning_rate": 0.03,
+            "min_child_samples": max(10, child - 20),
+            "subsample": 0.90,
+            "colsample_bytree": 0.90,
+            "reg_lambda": 0.1,
+            "reg_alpha": 0.0,
+            "min_split_gain": 0.0,
         },
         {
             **base,
             "num_leaves": 31,
-            "max_depth": 5,
-            "min_child_samples": min(300, child + 40),
+            "max_depth": 6,
+            "learning_rate": 0.025,
+            "min_child_samples": child,
             "subsample": 0.80,
             "colsample_bytree": 0.80,
-            "reg_lambda": 2.5,
-            "reg_alpha": 0.8,
-            "min_split_gain": 0.05,
+            "reg_lambda": 0.5,
+            "reg_alpha": 0.0,
+            "min_split_gain": 0.0,
         },
         {
             **base,
             "num_leaves": 47,
-            "max_depth": 5,
-            "min_child_samples": min(300, child + 60),
+            "max_depth": 7,
+            "learning_rate": 0.02,
+            "min_child_samples": min(140, child + 20),
             "subsample": 0.75,
             "colsample_bytree": 0.75,
-            "reg_lambda": 3.0,
-            "reg_alpha": 1.0,
-            "min_split_gain": 0.08,
+            "reg_lambda": 1.0,
+            "reg_alpha": 0.05,
+            "min_split_gain": 0.0,
         },
         {
             **base,
             "num_leaves": 63,
-            "max_depth": 6,
-            "min_child_samples": min(300, child + 80),
+            "max_depth": 8,
+            "learning_rate": 0.015,
+            "min_child_samples": min(180, child + 40),
             "subsample": 0.70,
             "colsample_bytree": 0.70,
-            "learning_rate": 0.015,
-            "reg_lambda": 4.0,
-            "reg_alpha": 1.2,
-            "min_split_gain": 0.10,
+            "reg_lambda": 1.5,
+            "reg_alpha": 0.1,
+            "min_split_gain": 0.005,
         },
     ]
 
@@ -394,20 +405,28 @@ def select_best_lgbm_model(
 ) -> tuple[Any, dict[str, Any], pd.DataFrame]:
     candidates = lgbm_candidate_params(random_state=random_state, train_rows=len(x_train))
     scored_rows: list[dict[str, Any]] = []
-    best_model: Any | None = None
-    best_params: dict[str, Any] | None = None
-    best_score = -np.inf
+    models_by_id: dict[int, Any] = {}
+    params_by_id: dict[int, dict[str, Any]] = {}
+    train_y_std = _safe_std(y_train.to_numpy())
+    val_y_std = _safe_std(y_val.to_numpy())
 
     for idx, params in enumerate(candidates):
         model = LGBMRegressor(**params)
         model = _fit_lgbm_model(model, x_train, y_train, x_val, y_val)
+        models_by_id[idx] = model
+        params_by_id[idx] = params
         pred_train = model.predict(x_train)
         pred_val = model.predict(x_val)
         train_metrics = compute_regression_metrics(y_train, pred_train)
         val_metrics = compute_regression_metrics(y_val, pred_val)
+        train_var_ratio = 0.0 if train_y_std <= 0 else _safe_std(pred_train) / train_y_std
+        val_var_ratio = 0.0 if val_y_std <= 0 else _safe_std(pred_val) / val_y_std
 
         overfit_gap = abs(train_metrics["ic_spearman"] - val_metrics["ic_spearman"])
         score = 0.65 * val_metrics["ic_spearman"] + 0.35 * val_metrics["ic_pearson"] - 0.60 * overfit_gap
+        score += 0.10 * min(1.0, float(val_var_ratio))
+        if val_var_ratio < 0.02:
+            score -= 0.35
 
         row = {
             "candidate_id": idx,
@@ -417,27 +436,42 @@ def select_best_lgbm_model(
             "val_ic_pearson": val_metrics["ic_pearson"],
             "val_rmse": val_metrics["rmse"],
             "overfit_gap": float(overfit_gap),
+            "train_pred_to_y_std_ratio": float(train_var_ratio),
+            "val_pred_to_y_std_ratio": float(val_var_ratio),
             "best_iteration": int(getattr(model, "best_iteration_", -1) or -1),
             "params": json.dumps(_to_serializable(params), ensure_ascii=False),
         }
         scored_rows.append(row)
-
-        if score > best_score:
-            best_score = float(score)
-            best_model = model
-            best_params = params
-
-    if best_model is None or best_params is None:
+    scored = pd.DataFrame(scored_rows).sort_values("score", ascending=False).reset_index(drop=True)
+    if scored.empty:
         raise RuntimeError("Failed to select LGBM model from candidates.")
 
-    scored = pd.DataFrame(scored_rows).sort_values("score", ascending=False).reset_index(drop=True)
+    min_viable_ratio = 0.002
+    viable = scored[scored["val_pred_to_y_std_ratio"] >= min_viable_ratio].copy()
+    if viable.empty:
+        selected_row = scored.iloc[0]
+    else:
+        selected_row = viable.sort_values("score", ascending=False).iloc[0]
+    selected_candidate_id = int(selected_row["candidate_id"])
+    best_model = models_by_id[selected_candidate_id]
+    best_params = params_by_id[selected_candidate_id]
+
+    scored["selected"] = scored["candidate_id"] == selected_candidate_id
+    scored = scored.sort_values(["selected", "score"], ascending=[False, False]).reset_index(drop=True)
     LOGGER.info(
-        "Selected LGBM candidate id=%s score=%.6f val_ic_spearman=%.6f overfit_gap=%.6f",
+        "Selected LGBM candidate id=%s score=%.6f val_ic_spearman=%.6f overfit_gap=%.6f val_ratio=%.4f",
         int(scored.loc[0, "candidate_id"]),
         float(scored.loc[0, "score"]),
         float(scored.loc[0, "val_ic_spearman"]),
         float(scored.loc[0, "overfit_gap"]),
+        float(scored.loc[0, "val_pred_to_y_std_ratio"]),
     )
+    if float(scored.loc[0, "val_pred_to_y_std_ratio"]) < 0.02:
+        LOGGER.warning(
+            "LGBM candidate predictions look collapsed (val_pred_to_y_std_ratio=%.6f). "
+            "Revisit feature engineering or loosen regularization further.",
+            float(scored.loc[0, "val_pred_to_y_std_ratio"]),
+        )
     return best_model, best_params, scored
 
 
@@ -508,6 +542,14 @@ def _run_single_split(
     pred_test_lower = lower_model.predict(x_test)
 
     min_threshold = min_threshold_from_cost(cost_bps=cost_bps, threshold_cost_multiplier=threshold_cost_multiplier)
+    max_abs_pred_val_main = float(np.max(np.abs(pred_val_main))) if len(pred_val_main) > 0 else 0.0
+    if min_threshold > 0 and max_abs_pred_val_main < min_threshold:
+        LOGGER.warning(
+            "Cost-derived threshold_min=%.6f is above max|pred_val_main|=%.6f. "
+            "Main strategy will likely stay flat; reduce cost_bps or threshold_cost_multiplier.",
+            float(min_threshold),
+            max_abs_pred_val_main,
+        )
     threshold_main, threshold_table_main = tune_threshold(
         y_val=y_val.to_numpy(),
         pred_val=pred_val_main,
