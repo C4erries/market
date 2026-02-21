@@ -15,7 +15,7 @@ OUT ?= ./data
 TARGET_SYMBOL ?= MGNT
 SYMBOLS ?= $(TARGET_SYMBOL),IMOEX,USDRUB
 INTERVALS ?= 1d,5m
-START ?= 2018-01-01
+START ?= 2016-06-06
 END ?= now
 MODE ?= incremental
 RAW_MAIN ?= ./data/candles_mgnt_1d.parquet
@@ -33,6 +33,7 @@ ML_VAL_RATIO ?= 0.15
 ML_TEST_RATIO ?= 0.15
 ML_THRESHOLD_QUANTILES ?= 0.6,0.7,0.8,0.9
 ML_COST_BPS ?= 0
+ML_SELECTION_COST_BPS ?=
 ML_THRESHOLD_COST_MULTIPLIER ?= 1.0
 ML_RANDOM_STATE ?= 42
 ML_WF_ENABLE ?= 1
@@ -42,6 +43,8 @@ ML_WF_STEP_SIZE ?=
 ML_SELECTOR_USE_COST_RULE ?= 1
 ML_SELECTOR_ALPHA_LOW ?= 0.1
 ML_SELECTOR_ALPHA_HIGH ?= 0.9
+ML_SELECTOR_RISK_MULTIPLIER ?= 1.0
+ML_SELECTOR_MAX_INTERVAL_WIDTH ?=
 SYMBOL ?= $(TARGET_SYMBOL)
 
 .PHONY: help install install-dev install-ml env-check test compile check run run-full run-symbol run-full-symbol run-mgnt run-x5 run-imoex run-usdrub run-full-mgnt run-full-x5 run-full-imoex run-full-usdrub ml-build-raw ml-prepare ml-train ml-predict ml-report ml-diagnostics ml-diagnostics-deep ml-data-view ml-model-plots clean
@@ -64,7 +67,7 @@ help:
 	@echo "  make install-ml   - install ML dependencies"
 	@echo "  make ml-build-raw - build flat 1D parquet files from partitioned candles"
 	@echo "  make ml-prepare   - build model-ready dataset"
-	@echo "  make ml-train     - train/evaluate models (ML_COST_BPS / ML_THRESHOLD_COST_MULTIPLIER / ML_WF_* / ML_SELECTOR_*)"
+	@echo "  make ml-train     - train/evaluate models (ML_COST_BPS / ML_SELECTION_COST_BPS / ML_THRESHOLD_COST_MULTIPLIER / ML_WF_* / ML_SELECTOR_*)"
 	@echo "  make ml-predict   - inference on latest row"
 	@echo "  make ml-report    - print compact report for all trained models"
 	@echo "  make ml-diagnostics - show raw/model-ready date windows and row counts"
@@ -139,7 +142,7 @@ ml-prepare:
 	$(PYTHON) -m scripts.prepare_features --main "$(RAW_MAIN)" --imoex "$(RAW_IMOEX)" --usdrub "$(RAW_USDRUB)" --output "$(ML_DATASET)"
 
 ml-train:
-	$(PYTHON) -m scripts.train_and_evaluate --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --train-ratio "$(ML_TRAIN_RATIO)" --val-ratio "$(ML_VAL_RATIO)" --test-ratio "$(ML_TEST_RATIO)" --threshold-quantiles "$(ML_THRESHOLD_QUANTILES)" --random-state "$(ML_RANDOM_STATE)" --cost-bps "$(ML_COST_BPS)" --threshold-cost-multiplier "$(ML_THRESHOLD_COST_MULTIPLIER)" --wf-enable "$(ML_WF_ENABLE)" --wf-folds "$(ML_WF_FOLDS)" --wf-expanding "$(ML_WF_EXPANDING)" --selector-use-cost-rule "$(ML_SELECTOR_USE_COST_RULE)" --selector-alpha-low "$(ML_SELECTOR_ALPHA_LOW)" --selector-alpha-high "$(ML_SELECTOR_ALPHA_HIGH)" $(if $(ML_WF_STEP_SIZE),--wf-step-size "$(ML_WF_STEP_SIZE)",)
+	$(PYTHON) -m scripts.train_and_evaluate --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)" --train-ratio "$(ML_TRAIN_RATIO)" --val-ratio "$(ML_VAL_RATIO)" --test-ratio "$(ML_TEST_RATIO)" --threshold-quantiles "$(ML_THRESHOLD_QUANTILES)" --random-state "$(ML_RANDOM_STATE)" --cost-bps "$(ML_COST_BPS)" --threshold-cost-multiplier "$(ML_THRESHOLD_COST_MULTIPLIER)" --wf-enable "$(ML_WF_ENABLE)" --wf-folds "$(ML_WF_FOLDS)" --wf-expanding "$(ML_WF_EXPANDING)" --selector-use-cost-rule "$(ML_SELECTOR_USE_COST_RULE)" --selector-alpha-low "$(ML_SELECTOR_ALPHA_LOW)" --selector-alpha-high "$(ML_SELECTOR_ALPHA_HIGH)" --selector-risk-multiple "$(ML_SELECTOR_RISK_MULTIPLIER)" $(if $(ML_WF_STEP_SIZE),--wf-step-size "$(ML_WF_STEP_SIZE)",) $(if $(ML_SELECTION_COST_BPS),--selection-cost-bps "$(ML_SELECTION_COST_BPS)",) $(if $(ML_SELECTOR_MAX_INTERVAL_WIDTH),--selector-max-interval-width "$(ML_SELECTOR_MAX_INTERVAL_WIDTH)",)
 
 ml-predict:
 	$(PYTHON) -m scripts.predict --dataset "$(ML_DATASET)" --artifacts "$(ML_ARTIFACTS)"

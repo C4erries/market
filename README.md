@@ -96,7 +96,8 @@ python -m scripts.train_and_evaluate \
   --wf-expanding 1 \
   --selector-use-cost-rule 1 \
   --selector-alpha-low 0.1 \
-  --selector-alpha-high 0.9
+  --selector-alpha-high 0.9 \
+  --selector-risk-multiple 1.0
 ```
 
 Models:
@@ -106,10 +107,12 @@ Models:
 - LightGBM quantile models (`alpha_low`/`alpha_high`, default `0.1/0.9`) for strong-signal selection.
 
 Cost-aware trading setup:
-- `cost_bps` is interpreted as round-trip daily transaction cost;
+- `cost_bps` is charged on turnover `abs(signal_t - signal_{t-1})` (entry/exit/flip aware);
+- LGBM candidate selection uses the same cost by default (`selection_cost_bps = cost_bps`), optional override via CLI;
 - `thr_min = cost_bps / 10000 * threshold_cost_multiplier`;
 - threshold search is hard-limited by `threshold >= thr_min`;
-- selector rule (default): `long` if `q_low > thr_min`, `short` if `q_high < -thr_min`, else `flat`.
+- selector rule (default): direction comes from main model (`pred_main` vs `pred_main_threshold`), quantiles act as risk filter:
+  long when `main > threshold` and `q_low > -risk_multiple * thr_min`, short when `main < -threshold` and `q_high < risk_multiple * thr_min`.
 
 Saved artifacts:
 - models: `ridge.joblib`, `logreg.joblib`, `main_lgbm.joblib`, quantile models;

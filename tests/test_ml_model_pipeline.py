@@ -63,8 +63,37 @@ class MlModelPipelineTests(unittest.TestCase):
     def test_selector_rule_cost_aware(self) -> None:
         q_low = np.array([0.002, 0.0005, -0.001], dtype=float)
         q_high = np.array([0.003, -0.002, -0.004], dtype=float)
-        signal = build_selector_signal(pred_q_low=q_low, pred_q_high=q_high, thr_min=0.001, use_cost_rule=True)
+        pred_main = np.array([0.003, -0.003, -0.002], dtype=float)
+        signal = build_selector_signal(
+            pred_q_low=q_low,
+            pred_q_high=q_high,
+            thr_min=0.001,
+            use_cost_rule=True,
+            pred_main=pred_main,
+            pred_main_threshold=0.001,
+        )
         self.assertListEqual(signal.tolist(), [1, -1, -1])
+
+    def test_selector_interval_width_filter_blocks_uncertain_cases(self) -> None:
+        signal = build_selector_signal(
+            pred_q_low=np.array([0.0002, -0.0005], dtype=float),
+            pred_q_high=np.array([0.0030, 0.0003], dtype=float),
+            thr_min=0.001,
+            use_cost_rule=True,
+            pred_main=np.array([0.003, -0.003], dtype=float),
+            pred_main_threshold=0.001,
+            max_interval_width=0.002,
+        )
+        self.assertListEqual(signal.tolist(), [0, -1])
+
+    def test_strategy_costs_use_turnover(self) -> None:
+        y_true = np.zeros(4, dtype=float)
+        pred = np.array([1.0, 1.0, -1.0, 0.0], dtype=float)
+        result = evaluate_strategy(y_true=y_true, pred=pred, threshold=0.5, cost_bps=10.0)
+
+        np.testing.assert_allclose(result.curve["turnover"].to_numpy(), np.array([1.0, 0.0, 2.0, 1.0], dtype=float))
+        np.testing.assert_allclose(result.curve["transaction_cost"].to_numpy(), np.array([0.001, 0.0, 0.002, 0.001], dtype=float))
+        self.assertAlmostEqual(float(result.metrics["transaction_cost_total"]), 0.004, places=8)
 
     def test_sanity_warning_when_prediction_collapses(self) -> None:
         y = np.array([0.01, -0.01, 0.015, -0.02, 0.012], dtype=float)
@@ -108,6 +137,7 @@ class MlModelPipelineTests(unittest.TestCase):
             val_ic_pearson=0.04,
             overfit_gap=0.1,
             val_pred_to_y_std_ratio=0.02,
+            val_pred_std=0.001,
             val_exposure=0.30,
         )
         penalized = score_lgbm_candidate(
@@ -116,6 +146,7 @@ class MlModelPipelineTests(unittest.TestCase):
             val_ic_pearson=0.04,
             overfit_gap=0.1,
             val_pred_to_y_std_ratio=0.005,
+            val_pred_std=0.0,
             val_exposure=0.10,
         )
         self.assertLess(penalized, strong - 0.49)

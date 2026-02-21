@@ -188,16 +188,38 @@ def build_selector_signal(
     use_cost_rule: bool = True,
     pred_main: Optional[np.ndarray] = None,
     pred_main_threshold: float = 0.0,
+    risk_multiple: float = 1.0,
+    max_interval_width: Optional[float] = None,
 ) -> np.ndarray:
     q_low = np.asarray(pred_q_low, dtype=float)
     q_high = np.asarray(pred_q_high, dtype=float)
-    if use_cost_rule:
-        return np.where(q_low > thr_min, 1, np.where(q_high < -thr_min, -1, 0))
-
     if pred_main is None:
-        raise ValueError("pred_main must be provided when use_cost_rule=False")
+        raise ValueError("pred_main must be provided for selector direction")
+    if risk_multiple <= 0:
+        raise ValueError("risk_multiple must be > 0")
+    if max_interval_width is not None and max_interval_width <= 0:
+        raise ValueError("max_interval_width must be > 0 when provided")
+
     main = np.asarray(pred_main, dtype=float)
-    return np.where((main > pred_main_threshold) & (q_low > 0), 1, np.where((main < -pred_main_threshold) & (q_high < 0), -1, 0))
+    finite_mask = np.isfinite(main) & np.isfinite(q_low) & np.isfinite(q_high)
+    long_direction = main > float(pred_main_threshold)
+    short_direction = main < -float(pred_main_threshold)
+
+    if use_cost_rule:
+        risk_band = float(risk_multiple) * float(thr_min)
+        risk_ok_long = q_low > -risk_band
+        risk_ok_short = q_high < risk_band
+    else:
+        risk_ok_long = q_low > 0
+        risk_ok_short = q_high < 0
+
+    interval_ok = np.ones_like(main, dtype=bool)
+    if max_interval_width is not None:
+        interval_ok = (q_high - q_low) <= float(max_interval_width)
+
+    long_signal = finite_mask & long_direction & risk_ok_long & interval_ok
+    short_signal = finite_mask & short_direction & risk_ok_short & interval_ok
+    return np.where(long_signal, 1, np.where(short_signal, -1, 0)).astype(int)
 
 
 def evaluate_strategy(
@@ -213,8 +235,14 @@ def evaluate_strategy(
         signal = np.where(pred > threshold, 1, np.where(pred < -threshold, -1, 0))
     else:
         signal = np.asarray(signal_override, dtype=int)
-    costs = (cost_bps / 10_000.0) * (np.abs(signal) > 0).astype(float)
-    strategy_returns = signal * y_true - costs
+    if signal.size == 0:
+        turnover = np.array([], dtype=float)
+    else:
+        prev_signal = np.roll(signal, 1)
+        prev_signal[0] = 0
+        turnover = np.abs(signal - prev_signal).astype(float)
+    transaction_cost = (cost_bps / 10_000.0) * turnover
+    strategy_returns = signal * y_true - transaction_cost
 
     curve = pd.DataFrame(
         {
@@ -222,6 +250,8 @@ def evaluate_strategy(
             "y_true": y_true,
             "pred": pred,
             "signal": signal,
+            "turnover": turnover,
+            "transaction_cost": transaction_cost,
             "strategy_return": strategy_returns,
         }
     )
@@ -247,6 +277,9 @@ def evaluate_strategy(
         "sharpe": float(sharpe),
         "max_drawdown": max_drawdown,
         "exposure": float(active.mean()),
+        "turnover_total": float(curve["turnover"].sum()),
+        "turnover_avg": float(curve["turnover"].mean()) if len(curve) > 0 else 0.0,
+        "transaction_cost_total": float(curve["transaction_cost"].sum()),
         "hit_rate": hit_rate,
     }
     return StrategyResult(metrics=metrics, curve=curve)
@@ -375,7 +408,9 @@ def _plot_equity_curve(curve: pd.DataFrame, output_path: Path, title: str) -> No
 
 
 def _fit_lgbm_model(model: Any, x_train: pd.DataFrame, y_train: pd.Series, x_val: pd.DataFrame, y_val: pd.Series) -> Any:
-    fit_kwargs: dict[str, Any] = {"eval_set": [(x_val, y_val)], "eval_metric": "l2"}
+    objective = str(model.get_params().get("objective", "regression")).lower()
+    eval_metric = "quantile" if objective == "quantile" else "l2"
+    fit_kwargs: dict[str, Any] = {"eval_set": [(x_val, y_val)], "eval_metric": eval_metric}
     if lgb is not None:
         fit_kwargs["callbacks"] = [lgb.early_stopping(stopping_rounds=120, verbose=False)]
     model.fit(x_train, y_train, **fit_kwargs)
@@ -389,12 +424,21 @@ def score_lgbm_candidate(
     val_ic_pearson: float,
     overfit_gap: float,
     val_pred_to_y_std_ratio: float,
+    val_pred_std: float,
     val_exposure: float,
 ) -> float:
     clipped_sharpe = float(np.clip(val_sharpe, -3.0, 3.0))
     score = 0.70 * clipped_sharpe + 0.20 * float(val_ic_spearman) + 0.10 * float(val_ic_pearson) - 0.35 * float(overfit_gap)
-    if float(val_pred_to_y_std_ratio) < 0.01:
-        score -= 0.30
+    ratio = float(val_pred_to_y_std_ratio)
+    pred_std = float(val_pred_std)
+    if ratio < 0.005:
+        score -= 1.00
+    elif ratio < 0.01:
+        score -= 0.60
+    elif ratio < 0.02:
+        score -= 0.35
+    if pred_std < 1e-5:
+        score -= 0.50
     if float(val_exposure) < 0.15:
         score -= 0.20
     return float(score)
@@ -468,7 +512,8 @@ def select_best_lgbm_model(
     threshold_quantiles: tuple[float, ...],
     threshold_cost_multiplier: float,
     random_state: int,
-    selection_cost_bps: float = 10.0,
+    selection_cost_bps: float = 0.0,
+    min_viable_ratio: float = 0.03,
 ) -> tuple[Any, dict[str, Any], float, pd.DataFrame]:
     candidates = lgbm_candidate_params(random_state=random_state, train_rows=len(x_train))
     scored_rows: list[dict[str, Any]] = []
@@ -478,6 +523,7 @@ def select_best_lgbm_model(
     train_y_std = _safe_std(y_train.to_numpy())
     val_y_std = _safe_std(y_val.to_numpy())
     min_threshold_selection = min_threshold_from_cost(cost_bps=selection_cost_bps, threshold_cost_multiplier=threshold_cost_multiplier)
+    min_viable_pred_std = max(1e-5, 0.001 * val_y_std)
 
     for idx, params in enumerate(candidates):
         model = LGBMRegressor(**params)
@@ -488,8 +534,10 @@ def select_best_lgbm_model(
         pred_val = np.asarray(model.predict(x_val), dtype=float)
         train_metrics = compute_regression_metrics(y_train, pred_train)
         val_metrics = compute_regression_metrics(y_val, pred_val)
-        train_var_ratio_raw = 0.0 if train_y_std <= 0 else _safe_std(pred_train) / train_y_std
-        val_var_ratio_raw = 0.0 if val_y_std <= 0 else _safe_std(pred_val) / val_y_std
+        train_pred_std_raw = _safe_std(pred_train)
+        val_pred_std_raw = _safe_std(pred_val)
+        train_var_ratio_raw = 0.0 if train_y_std <= 0 else train_pred_std_raw / train_y_std
+        val_var_ratio_raw = 0.0 if val_y_std <= 0 else val_pred_std_raw / val_y_std
 
         overfit_gap = abs(train_metrics["ic_spearman"] - val_metrics["ic_spearman"])
         scale_choice = choose_prediction_scale(
@@ -505,6 +553,8 @@ def select_best_lgbm_model(
         val_strategy_sharpe = float(scale_choice["val_strategy_sharpe"])
         val_strategy_exposure = float(scale_choice["val_strategy_exposure"])
         scale_by_id[idx] = selected_scale
+        train_pred_std = float(train_pred_std_raw * selected_scale)
+        val_pred_std = float(val_pred_std_raw * selected_scale)
         train_var_ratio = float(train_var_ratio_raw * selected_scale)
         val_var_ratio = float(val_var_ratio_raw * selected_scale)
         score = score_lgbm_candidate(
@@ -513,8 +563,18 @@ def select_best_lgbm_model(
             val_ic_pearson=val_metrics["ic_pearson"],
             overfit_gap=overfit_gap,
             val_pred_to_y_std_ratio=val_var_ratio,
+            val_pred_std=val_pred_std,
             val_exposure=val_strategy_exposure,
         )
+        best_iteration = int(getattr(model, "best_iteration_", -1) or -1)
+        n_iterations = int(getattr(model, "n_estimators_", -1) or -1)
+        if n_iterations <= 0 and getattr(model, "booster_", None) is not None:
+            try:
+                n_iterations = int(model.booster_.current_iteration())
+            except Exception:
+                n_iterations = -1
+        if n_iterations <= 0:
+            n_iterations = int(params.get("n_estimators", -1))
 
         row = {
             "candidate_id": idx,
@@ -527,10 +587,13 @@ def select_best_lgbm_model(
             "val_strategy_exposure": val_strategy_exposure,
             "val_strategy_threshold": float(scale_choice["threshold"]),
             "overfit_gap": float(overfit_gap),
+            "train_pred_std": train_pred_std,
+            "val_pred_std": val_pred_std,
             "train_pred_to_y_std_ratio": float(train_var_ratio),
             "val_pred_to_y_std_ratio": float(val_var_ratio),
             "selected_scale": selected_scale,
-            "best_iteration": int(getattr(model, "best_iteration_", -1) or -1),
+            "best_iteration": best_iteration,
+            "n_iterations": n_iterations,
             "params": json.dumps(_to_serializable(params), ensure_ascii=False),
         }
         scored_rows.append(row)
@@ -538,13 +601,16 @@ def select_best_lgbm_model(
     if scored.empty:
         raise RuntimeError("Failed to select LGBM model from candidates.")
 
-    min_viable_ratio = 0.005
-    viable = scored[scored["val_pred_to_y_std_ratio"] >= min_viable_ratio].copy()
+    viable = scored[
+        (scored["val_pred_to_y_std_ratio"] >= float(min_viable_ratio))
+        & (scored["val_pred_std"] >= float(min_viable_pred_std))
+    ].copy()
     if viable.empty:
         selected_row = scored.iloc[0]
         LOGGER.warning(
-            "No LGBM candidate reached val_pred_to_y_std_ratio >= %.4f; using best score fallback.",
-            min_viable_ratio,
+            "No LGBM candidate reached viability filters ratio>=%.4f and val_pred_std>=%.6f; using best score fallback.",
+            float(min_viable_ratio),
+            float(min_viable_pred_std),
         )
     else:
         selected_row = viable.sort_values("score", ascending=False).iloc[0]
@@ -556,7 +622,7 @@ def select_best_lgbm_model(
     scored["selected"] = scored["candidate_id"] == selected_candidate_id
     scored = scored.sort_values(["selected", "score"], ascending=[False, False]).reset_index(drop=True)
     LOGGER.info(
-        "Selected LGBM candidate id=%s score=%.6f val_sharpe=%.4f val_ic_spearman=%.6f overfit_gap=%.6f val_ratio=%.4f scale=%.2f",
+        "Selected LGBM candidate id=%s score=%.6f val_sharpe=%.4f val_ic_spearman=%.6f overfit_gap=%.6f val_ratio=%.4f scale=%.2f best_iter=%s n_iter=%s train_pred_std=%.6f val_pred_std=%.6f",
         int(scored.loc[0, "candidate_id"]),
         float(scored.loc[0, "score"]),
         float(scored.loc[0, "val_strategy_sharpe"]),
@@ -564,12 +630,17 @@ def select_best_lgbm_model(
         float(scored.loc[0, "overfit_gap"]),
         float(scored.loc[0, "val_pred_to_y_std_ratio"]),
         float(scored.loc[0, "selected_scale"]),
+        int(scored.loc[0, "best_iteration"]),
+        int(scored.loc[0, "n_iterations"]),
+        float(scored.loc[0, "train_pred_std"]),
+        float(scored.loc[0, "val_pred_std"]),
     )
-    if float(scored.loc[0, "val_pred_to_y_std_ratio"]) < 0.02:
+    if float(scored.loc[0, "val_pred_to_y_std_ratio"]) < 0.02 or float(scored.loc[0, "val_pred_std"]) < float(min_viable_pred_std):
         LOGGER.warning(
-            "LGBM candidate predictions look collapsed (val_pred_to_y_std_ratio=%.6f). "
-            "Revisit feature engineering or loosen regularization further.",
+            "LGBM candidate predictions look collapsed (val_pred_to_y_std_ratio=%.6f, val_pred_std=%.6f). "
+            "Revisit feature engineering or loosen regularization.",
             float(scored.loc[0, "val_pred_to_y_std_ratio"]),
+            float(scored.loc[0, "val_pred_std"]),
         )
     return best_model, best_params, float(best_scale), scored
 
@@ -595,10 +666,13 @@ def _run_single_split(
     threshold_quantiles: tuple[float, ...],
     random_state: int,
     cost_bps: float,
+    selection_cost_bps: Optional[float],
     threshold_cost_multiplier: float,
     selector_use_cost_rule: bool,
     selector_alpha_low: float,
     selector_alpha_high: float,
+    selector_risk_multiple: float,
+    selector_max_interval_width: Optional[float],
     feature_cols: Optional[list[str]] = None,
 ) -> SplitRunResult:
     if feature_cols is None:
@@ -614,6 +688,7 @@ def _run_single_split(
     y_test = split.test["y"]
     y_dir_test = split.test["y_dir"]
     _validate_feature_matrices(x_train=x_train, x_val=x_val, x_test=x_test)
+    effective_selection_cost_bps = float(cost_bps if selection_cost_bps is None else selection_cost_bps)
 
     ridge = Pipeline(steps=[("scaler", StandardScaler()), ("model", Ridge(alpha=1.0))])
     ridge.fit(x_train, y_train)
@@ -630,7 +705,7 @@ def _run_single_split(
         threshold_quantiles=threshold_quantiles,
         threshold_cost_multiplier=threshold_cost_multiplier,
         random_state=random_state,
-        selection_cost_bps=10.0,
+        selection_cost_bps=effective_selection_cost_bps,
     )
     upper_model = LGBMRegressor(**{**lgb_params, "objective": "quantile", "alpha": selector_alpha_high})
     lower_model = LGBMRegressor(**{**lgb_params, "objective": "quantile", "alpha": selector_alpha_low})
@@ -685,6 +760,8 @@ def _run_single_split(
         use_cost_rule=selector_use_cost_rule,
         pred_main=pred_test_main,
         pred_main_threshold=threshold_main,
+        risk_multiple=selector_risk_multiple,
+        max_interval_width=selector_max_interval_width,
     )
     selector_threshold = float(min_threshold if selector_use_cost_rule else 0.0)
     selector_strategy = evaluate_strategy(
@@ -801,10 +878,13 @@ def _run_walk_forward(
     threshold_quantiles: tuple[float, ...],
     random_state: int,
     cost_bps: float,
+    selection_cost_bps: Optional[float],
     threshold_cost_multiplier: float,
     selector_use_cost_rule: bool,
     selector_alpha_low: float,
     selector_alpha_high: float,
+    selector_risk_multiple: float,
+    selector_max_interval_width: Optional[float],
     train_ratio: float,
     val_ratio: float,
     test_ratio: float,
@@ -838,10 +918,13 @@ def _run_walk_forward(
             threshold_quantiles=threshold_quantiles,
             random_state=random_state,
             cost_bps=cost_bps,
+            selection_cost_bps=selection_cost_bps,
             threshold_cost_multiplier=threshold_cost_multiplier,
             selector_use_cost_rule=selector_use_cost_rule,
             selector_alpha_low=selector_alpha_low,
             selector_alpha_high=selector_alpha_high,
+            selector_risk_multiple=selector_risk_multiple,
+            selector_max_interval_width=selector_max_interval_width,
             feature_cols=feature_cols,
         )
         row = {
@@ -934,6 +1017,7 @@ def train_and_evaluate(
     threshold_quantiles: tuple[float, ...] = (0.60, 0.70, 0.80, 0.90),
     random_state: int = 42,
     cost_bps: float = 0.0,
+    selection_cost_bps: Optional[float] = None,
     threshold_cost_multiplier: float = 1.0,
     wf_enable: bool = True,
     wf_folds: int = 6,
@@ -942,9 +1026,15 @@ def train_and_evaluate(
     selector_use_cost_rule: bool = True,
     selector_alpha_low: float = 0.10,
     selector_alpha_high: float = 0.90,
+    selector_risk_multiple: float = 1.0,
+    selector_max_interval_width: Optional[float] = None,
 ) -> dict[str, Any]:
     if not (0 < selector_alpha_low < selector_alpha_high < 1):
         raise ValueError("selector_alpha_low and selector_alpha_high must satisfy 0 < low < high < 1")
+    if selector_risk_multiple <= 0:
+        raise ValueError("selector_risk_multiple must be > 0")
+    if selector_max_interval_width is not None and selector_max_interval_width <= 0:
+        raise ValueError("selector_max_interval_width must be > 0 when provided")
 
     dataset = load_dataset(dataset_path)
     split: TimeSplitResult = time_split(dataset, train_ratio=train_ratio, val_ratio=val_ratio, test_ratio=test_ratio)
@@ -954,10 +1044,13 @@ def train_and_evaluate(
         threshold_quantiles=threshold_quantiles,
         random_state=random_state,
         cost_bps=cost_bps,
+        selection_cost_bps=selection_cost_bps,
         threshold_cost_multiplier=threshold_cost_multiplier,
         selector_use_cost_rule=selector_use_cost_rule,
         selector_alpha_low=selector_alpha_low,
         selector_alpha_high=selector_alpha_high,
+        selector_risk_multiple=selector_risk_multiple,
+        selector_max_interval_width=selector_max_interval_width,
         feature_cols=feature_cols,
     )
     LOGGER.info(
@@ -984,10 +1077,13 @@ def train_and_evaluate(
             threshold_quantiles=threshold_quantiles,
             random_state=random_state,
             cost_bps=cost_bps,
+            selection_cost_bps=selection_cost_bps,
             threshold_cost_multiplier=threshold_cost_multiplier,
             selector_use_cost_rule=selector_use_cost_rule,
             selector_alpha_low=selector_alpha_low,
             selector_alpha_high=selector_alpha_high,
+            selector_risk_multiple=selector_risk_multiple,
+            selector_max_interval_width=selector_max_interval_width,
             train_ratio=train_ratio,
             val_ratio=val_ratio,
             test_ratio=test_ratio,
@@ -1021,11 +1117,14 @@ def train_and_evaluate(
             "threshold_cost_multiplier": float(threshold_cost_multiplier),
             "threshold_quantiles": list(threshold_quantiles),
             "cost_bps": float(cost_bps),
+            "selection_cost_bps": float(cost_bps if selection_cost_bps is None else selection_cost_bps),
         },
         "selector_config": {
             "use_cost_rule": bool(selector_use_cost_rule),
             "alpha_low": float(selector_alpha_low),
             "alpha_high": float(selector_alpha_high),
+            "risk_multiple": float(selector_risk_multiple),
+            "max_interval_width": float(selector_max_interval_width) if selector_max_interval_width is not None else None,
             "thr_min": float(split_result.thresholds["threshold_min"]),
             "signal_rate_test": selector_signal_rate,
         },
@@ -1039,6 +1138,7 @@ def train_and_evaluate(
             "random_state": random_state,
             "lgbm_params": split_result.lgbm_params,
             "prediction_scale_main": float(split_result.prediction_scale_main),
+            "selection_cost_bps": float(cost_bps if selection_cost_bps is None else selection_cost_bps),
             "wf_enable": bool(wf_enable),
             "wf_folds": int(wf_folds),
             "wf_expanding": bool(wf_expanding),
