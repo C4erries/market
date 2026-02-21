@@ -3,7 +3,14 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ml_pipeline.model_pipeline import compute_regression_metrics, evaluate_strategy, tune_threshold
+from ml_pipeline.model_pipeline import (
+    build_sanity_checks,
+    build_selector_signal,
+    compute_regression_metrics,
+    evaluate_strategy,
+    min_threshold_from_cost,
+    tune_threshold,
+)
 
 
 class MlModelPipelineTests(unittest.TestCase):
@@ -27,8 +34,10 @@ class MlModelPipelineTests(unittest.TestCase):
             pred_val=pred_val,
             dates_val=pd.Series(dates),
             quantiles=(0.6, 0.7, 0.8, 0.9),
+            min_threshold=0.005,
         )
-        self.assertGreaterEqual(threshold, 0.0)
+        self.assertGreaterEqual(threshold, 0.005)
+        self.assertTrue((table["threshold"] >= 0.005).all())
         self.assertFalse(table.empty)
 
     def test_regression_metrics_ic_respects_values_not_index_alignment(self) -> None:
@@ -38,6 +47,21 @@ class MlModelPipelineTests(unittest.TestCase):
 
         self.assertGreater(metrics["ic_pearson"], 0.99)
         self.assertGreater(metrics["ic_spearman"], 0.99)
+
+    def test_min_threshold_from_cost_roundtrip(self) -> None:
+        self.assertAlmostEqual(min_threshold_from_cost(cost_bps=10, threshold_cost_multiplier=1.0), 0.001)
+
+    def test_selector_rule_cost_aware(self) -> None:
+        q_low = np.array([0.002, 0.0005, -0.001], dtype=float)
+        q_high = np.array([0.003, -0.002, -0.004], dtype=float)
+        signal = build_selector_signal(pred_q_low=q_low, pred_q_high=q_high, thr_min=0.001, use_cost_rule=True)
+        self.assertListEqual(signal.tolist(), [1, -1, -1])
+
+    def test_sanity_warning_when_prediction_collapses(self) -> None:
+        y = np.array([0.01, -0.01, 0.015, -0.02, 0.012], dtype=float)
+        pred = np.zeros_like(y)
+        sanity = build_sanity_checks(y_val=y, pred_val=pred, y_test=y, pred_test=pred)
+        self.assertTrue(bool(sanity["pred_collapse_warning"]))
 
 
 if __name__ == "__main__":

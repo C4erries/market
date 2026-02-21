@@ -13,6 +13,7 @@ from ml_pipeline.visualization import (
     plot_residuals,
     plot_signal_distribution,
     plot_threshold_search,
+    plot_walk_forward_metric,
 )
 
 
@@ -47,10 +48,36 @@ def main() -> None:
     plot_equity_and_drawdown(main_curve, out_dir / "equity_drawdown_main.png", title="Main Strategy: Equity and Drawdown")
     plot_signal_distribution(main_curve, out_dir / "signal_distribution_main.png")
 
+    selector_curve_path = artifacts / "data" / "equity_curve_selector_test.csv"
+    if selector_curve_path.exists():
+        selector_curve = pd.read_csv(selector_curve_path)
+        selector_curve["date"] = pd.to_datetime(selector_curve["date"], errors="coerce")
+        plot_signal_distribution(selector_curve, out_dir / "selector_signal_distribution.png")
+
     threshold_path = artifacts / "reports" / "threshold_search.csv"
     if threshold_path.exists():
         threshold_table = pd.read_csv(threshold_path)
         plot_threshold_search(threshold_table, out_dir / "threshold_search.png")
+
+    walk_forward_path = artifacts / "reports" / "walk_forward_folds.csv"
+    if walk_forward_path.exists():
+        walk_forward = pd.read_csv(walk_forward_path)
+        if {"fold", "strategy_main_test_sharpe"}.issubset(walk_forward.columns):
+            plot_walk_forward_metric(
+                walk_forward,
+                out_dir / "walk_forward_sharpe.png",
+                metric_col="strategy_main_test_sharpe",
+                title="Walk-forward Sharpe by Fold",
+                y_label="Sharpe",
+            )
+        if {"fold", "lgbm_test_ic_spearman"}.issubset(walk_forward.columns):
+            plot_walk_forward_metric(
+                walk_forward,
+                out_dir / "walk_forward_ic.png",
+                metric_col="lgbm_test_ic_spearman",
+                title="Walk-forward IC (Spearman) by Fold",
+                y_label="IC Spearman",
+            )
 
     feature_path = artifacts / "feature_columns.json"
     model_path = artifacts / "models" / "main_lgbm.joblib"

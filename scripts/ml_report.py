@@ -37,6 +37,46 @@ def main() -> None:
     for model_name in run_report.get("saved_models", []):
         print(f"  - {model_name}")
 
+    sanity = run_report.get("sanity_checks")
+    if isinstance(sanity, dict) and sanity:
+        print("Sanity checks:")
+        print(
+            "  pred_std(test)={:.6f} y_std(test)={:.6f} ratio={:.4f} collapse_warning={}".format(
+                float(sanity.get("pred_main_std_test", 0.0)),
+                float(sanity.get("y_std_test", 0.0)),
+                float(sanity.get("pred_to_y_std_ratio_test", 0.0)),
+                bool(sanity.get("pred_collapse_warning", False)),
+            )
+        )
+
+    walk_forward = run_report.get("walk_forward")
+    if isinstance(walk_forward, dict) and walk_forward.get("enabled"):
+        summary = walk_forward.get("summary", {})
+        sharpe_stats = summary.get("strategy_main_test_sharpe", {})
+        ic_stats = summary.get("lgbm_test_ic_spearman", {})
+        print("Walk-forward:")
+        print(
+            "  folds={} median_sharpe={:.4f} sharpe_std={:.4f} median_ic={:.4f} ic_std={:.4f}".format(
+                int(walk_forward.get("actual_folds", 0)),
+                float(sharpe_stats.get("median", 0.0)),
+                float(sharpe_stats.get("std", 0.0)),
+                float(ic_stats.get("median", 0.0)),
+                float(ic_stats.get("std", 0.0)),
+            )
+        )
+
+    selector = run_report.get("selector_config")
+    if isinstance(selector, dict) and selector:
+        print("Selector config:")
+        print(
+            "  alpha_low={} alpha_high={} thr_min={:.6f} signal_rate={:.3f}".format(
+                selector.get("alpha_low"),
+                selector.get("alpha_high"),
+                float(selector.get("thr_min", 0.0)),
+                float(selector.get("signal_rate_test", 0.0)),
+            )
+        )
+
     if quality_path.exists():
         quality = pd.read_csv(quality_path)
         print("\nModel quality table (reports/model_quality.csv):")

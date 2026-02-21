@@ -89,19 +89,33 @@ python -m scripts.train_and_evaluate \
   --val-ratio 0.15 \
   --test-ratio 0.15 \
   --threshold-quantiles 0.6,0.7,0.8,0.9 \
-  --cost-bps 0
+  --cost-bps 10 \
+  --threshold-cost-multiplier 1.0 \
+  --wf-enable 1 \
+  --wf-folds 6 \
+  --wf-expanding 1 \
+  --selector-use-cost-rule 1 \
+  --selector-alpha-low 0.1 \
+  --selector-alpha-high 0.9
 ```
 
 Models:
 - `Ridge` regression baseline;
 - `LogisticRegression` direction baseline;
-- `LightGBMRegressor` main model;
-- LightGBM quantile models (`alpha=0.8` and `alpha=0.2`) for strong-signal selection.
+- `LightGBMRegressor` main model (candidate selection by IC + anti-overfit penalties, not RMSE-driven);
+- LightGBM quantile models (`alpha_low`/`alpha_high`, default `0.1/0.9`) for strong-signal selection.
+
+Cost-aware trading setup:
+- `cost_bps` is interpreted as round-trip daily transaction cost;
+- `thr_min = cost_bps / 10000 * threshold_cost_multiplier`;
+- threshold search is hard-limited by `threshold >= thr_min`;
+- selector rule (default): `long` if `q_low > thr_min`, `short` if `q_high < -thr_min`, else `flat`.
 
 Saved artifacts:
 - models: `ridge.joblib`, `logreg.joblib`, `main_lgbm.joblib`, quantile models;
 - configs/metrics: `feature_columns.json`, `strategy_config.json`, `metrics.json`, `run_report.json`;
-- reports: `threshold_search.csv`, `model_quality.csv`, test predictions, equity curves and plots.
+- reports: `threshold_search.csv`, `threshold_search_logreg.csv`, `lgbm_model_selection.csv`, `model_quality.csv`,
+  `walk_forward_folds.csv`, `walk_forward_summary.csv`, test predictions, equity curves and plots.
 
 ### 3) Predict latest signal
 
@@ -150,7 +164,10 @@ Saves model diagnostics to `./artifacts/ml/plots/model_diagnostics`:
 - residual histogram (`residuals_hist.png`)
 - equity + drawdown (`equity_drawdown_main.png`)
 - signal distribution (`signal_distribution_main.png`)
+- selector signal distribution (`selector_signal_distribution.png`, if available)
 - threshold search (`threshold_search.png`, if available)
+- walk-forward Sharpe (`walk_forward_sharpe.png`, if available)
+- walk-forward IC (`walk_forward_ic.png`, if available)
 - feature importance (`feature_importance_main_lgbm.png`, if available)
 
 ## Output

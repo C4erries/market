@@ -17,6 +17,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--threshold-quantiles", default="0.6,0.7,0.8,0.9")
     parser.add_argument("--random-state", type=int, default=42)
     parser.add_argument("--cost-bps", type=float, default=0.0)
+    parser.add_argument("--threshold-cost-multiplier", type=float, default=1.0)
+    parser.add_argument("--wf-enable", type=int, default=1, help="1 to run walk-forward backtest, 0 to disable")
+    parser.add_argument("--wf-folds", type=int, default=6, help="Requested number of walk-forward folds")
+    parser.add_argument("--wf-expanding", type=int, default=1, help="1 for expanding train window, 0 for rolling")
+    parser.add_argument("--wf-step-size", type=int, default=None, help="Optional walk-forward step size")
+    parser.add_argument("--selector-use-cost-rule", type=int, default=1, help="1 to use q10/q90 cost-aware selector rule")
+    parser.add_argument("--selector-alpha-low", type=float, default=0.1)
+    parser.add_argument("--selector-alpha-high", type=float, default=0.9)
     return parser.parse_args()
 
 
@@ -42,6 +50,14 @@ def main() -> None:
         threshold_quantiles=parse_quantiles(args.threshold_quantiles),
         random_state=args.random_state,
         cost_bps=args.cost_bps,
+        threshold_cost_multiplier=args.threshold_cost_multiplier,
+        wf_enable=bool(args.wf_enable),
+        wf_folds=args.wf_folds,
+        wf_expanding=bool(args.wf_expanding),
+        wf_step_size=args.wf_step_size,
+        selector_use_cost_rule=bool(args.selector_use_cost_rule),
+        selector_alpha_low=args.selector_alpha_low,
+        selector_alpha_high=args.selector_alpha_high,
     )
 
     logging.info("Training finished. Artifacts: %s", args.artifacts)

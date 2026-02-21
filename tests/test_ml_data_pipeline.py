@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from ml_pipeline.data_pipeline import finalize_dataset, make_features, make_target, time_split
+from ml_pipeline.data_pipeline import finalize_dataset, make_features, make_target, time_split, walk_forward_splits
 
 
 class MlDataPipelineTests(unittest.TestCase):
@@ -44,6 +44,31 @@ class MlDataPipelineTests(unittest.TestCase):
         self.assertLessEqual(split.train["date"].max(), split.val["date"].min())
         self.assertLessEqual(split.val["date"].max(), split.test["date"].min())
         self.assertEqual(len(split.train) + len(split.val) + len(split.test), len(finalized))
+
+    def test_walk_forward_returns_requested_count_and_non_overlapping(self) -> None:
+        raw = self._sample_frame(n=260)
+        featured = make_features(raw)
+        targeted = make_target(featured, target_type="simple")
+        finalized = finalize_dataset(targeted.iloc[:-1].copy())
+
+        wf_folds = 4
+        val_size = 20
+        test_size = 20
+        step_size = 10
+        train_size = len(finalized) - val_size - test_size - (wf_folds - 1) * step_size
+
+        splits = walk_forward_splits(
+            finalized,
+            train_size=train_size,
+            val_size=val_size,
+            test_size=test_size,
+            step_size=step_size,
+            expanding=True,
+        )
+        self.assertEqual(len(splits), wf_folds)
+        for split in splits:
+            self.assertLessEqual(split.train["date"].max(), split.val["date"].min())
+            self.assertLessEqual(split.val["date"].max(), split.test["date"].min())
 
 
 if __name__ == "__main__":

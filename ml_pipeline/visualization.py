@@ -348,6 +348,31 @@ def plot_threshold_search(threshold_table: pd.DataFrame, output_path: str | Path
     return saved
 
 
+def plot_walk_forward_metric(
+    folds_table: pd.DataFrame,
+    output_path: str | Path,
+    *,
+    metric_col: str,
+    title: str,
+    y_label: str,
+) -> Path:
+    required = {"fold", metric_col}
+    missing = required - set(folds_table.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+    table = folds_table.copy().sort_values("fold")
+    plt = _load_matplotlib()
+    fig, axis = plt.subplots(figsize=(10, 4))
+    axis.plot(table["fold"], _to_numeric(table[metric_col]), marker="o", color="#1f77b4")
+    axis.set_title(title)
+    axis.set_xlabel("Fold")
+    axis.set_ylabel(y_label)
+    axis.grid(alpha=0.25)
+    saved = _save_plot(fig, output_path)
+    plt.close(fig)
+    return saved
+
+
 def plot_feature_importance(
     model_path: str | Path,
     feature_columns_path: str | Path,
